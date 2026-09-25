@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gamebot"
+version = "0.1.0"
+description = "Projected tabletop game machine runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "opencv-python-headless>=4.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+pi = ["picamera2>=0.3"]
+
+[project.scripts]
+gamebot = "gamebot.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
