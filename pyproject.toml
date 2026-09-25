@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "Projected tabletop game machine runtime"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE.md", "NOTICE"]
 dependencies = [
   "numpy>=1.26",
   "opencv-python-headless>=4.9",
