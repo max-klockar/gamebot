@@ -17,7 +17,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-pi = ["picamera2>=0.3", "RPi.GPIO>=0.7", "rpi-ws281x>=5.0"]
+# LED strip / GPIO only — enough for --led-demo (no apt build deps).
+pi-led = ["RPi.GPIO>=0.7", "rpi-ws281x>=5.0"]
+# Camera stack: needs `sudo apt install libcap-dev` (and usually works better via
+# apt `python3-picamera2` + venv --system-site-packages than pure pip).
+pi = ["gamebot[pi-led]", "picamera2>=0.3"]
 
 [project.scripts]
 gamebot = "gamebot.main:main"
