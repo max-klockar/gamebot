@@ -3,7 +3,8 @@
 
 Usage on Pi:
   python -m gamebot.bringup --camera picam --projector hdmi --led
-  python -m gamebot.bringup --led-demo   # cycle idle / thinking / overheat
+  python -m gamebot.bringup --led-demo              # headless: cycle blue / purple / red
+  python -m gamebot.bringup --led-demo --seconds 30
 """
 
 from __future__ import annotations
@@ -15,7 +16,12 @@ import cv2
 import numpy as np
 
 from gamebot.adapters import create_camera, create_projector
-from gamebot.adapters.led import LedMode, LedRing, create_led_backend
+from gamebot.adapters.led import (
+    LedMode,
+    LedRing,
+    Ws2812Backend,
+    create_led_backend,
+)
 from gamebot.calibration import make_grid_pattern
 
 
@@ -25,40 +31,50 @@ def _draw_led_swatch(frame: np.ndarray, led: LedRing, label: str) -> None:
     cv2.putText(frame, label, (frame.shape[1] - 160, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (240, 240, 240), 1)
 
 
-def run_led_demo(seconds: float) -> None:
-    led = LedRing(backend=create_led_backend("auto"), enabled=True)
+def _make_led_ring(kind: str, led_count: int) -> LedRing:
+    if kind == "ws2812" or (kind == "auto" and _ws2812_available()):
+        backend = Ws2812Backend(count=led_count)
+    else:
+        backend = create_led_backend(kind)
+    return LedRing(backend=backend, enabled=True)
+
+
+def _ws2812_available() -> bool:
+    try:
+        import RPi.GPIO  # noqa: F401
+        import rpi_ws281x  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def run_led_demo(seconds: float, led_count: int, loop: bool) -> None:
+    """Pulse blue → purple → red on the strip. No projector/camera needed."""
+    led = _make_led_ring("auto", led_count)
     led.open()
-    proj = create_projector("mock", (640, 360))
-    proj.open()
     modes = [
         (LedMode.IDLE, "idle blue", None),
         (LedMode.THINKING, "thinking purple", None),
         (LedMode.OVERHEAT, "overheat red", 90.0),
     ]
+    print(f"LED demo on {led_count} LEDs — Ctrl+C to stop")
     try:
-        per = max(1.0, seconds / len(modes))
-        for mode, label, mock_temp in modes:
-            led.thermal.set_mock(mock_temp)
-            led.set_mode(mode)
-            led.tick_thermal()
-            t_end = time.time() + per
-            while time.time() < t_end:
-                frame = np.zeros((360, 640, 3), dtype=np.uint8)
-                cv2.putText(
-                    frame,
-                    f"LED demo: {label}",
-                    (30, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9,
-                    (255, 255, 255),
-                    2,
-                )
-                _draw_led_swatch(frame, led, led._effective_mode().value)
-                proj.show(frame)
-                if proj.poll_key(30) in (ord("q"), 27):
-                    return
+        while True:
+            per = max(1.0, seconds / len(modes))
+            for mode, label, mock_temp in modes:
+                led.thermal.set_mock(mock_temp)
+                led.set_mode(mode)
+                led.tick_thermal()
+                print(f"  → {label}")
+                t_end = time.time() + per
+                while time.time() < t_end:
+                    time.sleep(0.05)
+            if not loop:
+                break
+    except KeyboardInterrupt:
+        print("\nstopped")
     finally:
-        proj.close()
         led.close()
 
 
@@ -67,17 +83,19 @@ def main() -> None:
     p.add_argument("--camera", choices=["mock", "picam", "file"], default="mock")
     p.add_argument("--projector", choices=["mock", "hdmi"], default="mock")
     p.add_argument("--led", action="store_true", help="Enable LED ring hardware backend")
-    p.add_argument("--led-demo", action="store_true", help="Cycle blue / purple / red LED modes")
-    p.add_argument("--seconds", type=float, default=5.0)
+    p.add_argument("--led-demo", action="store_true", help="Cycle blue / purple / red LED modes (headless OK)")
+    p.add_argument("--led-count", type=int, default=16, help="WS2812 LED count (default 16)")
+    p.add_argument("--loop", action="store_true", help="With --led-demo, repeat until Ctrl+C")
+    p.add_argument("--seconds", type=float, default=9.0, help="Total demo length (split across 3 colors)")
     args = p.parse_args()
 
     if args.led_demo:
-        run_led_demo(args.seconds)
+        run_led_demo(args.seconds, args.led_count, args.loop)
         return
 
     cam = create_camera(args.camera, (1280, 720))
     proj = create_projector(args.projector, (1280, 720))
-    led = LedRing(backend=create_led_backend("auto" if args.led else "mock"), enabled=True)
+    led = _make_led_ring("auto" if args.led else "mock", args.led_count)
     cam.open()
     proj.open()
     led.open()
