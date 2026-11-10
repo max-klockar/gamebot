@@ -30,7 +30,7 @@ class LedMode(str, Enum):
 
 # (base RGB 0-255, pulse amplitude 0-1, period seconds)
 _MODE_STYLE: dict[LedMode, tuple[tuple[int, int, int], float, float]] = {
-    LedMode.IDLE: ((50, 100, 220), 0.28, 3.2),       # soft blue breathe (menus + play)
+    LedMode.IDLE: ((70, 42, 28), 0.18, 4.0),         # dim warm amber breathe (not icy)
     LedMode.THINKING: ((150, 20, 200), 0.55, 0.75),  # purple
     LedMode.OVERHEAT: ((255, 0, 0), 1.0, 0.12),      # violent red
 }
