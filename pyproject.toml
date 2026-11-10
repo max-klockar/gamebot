@@ -21,7 +21,7 @@ dev = ["pytest>=8.0"]
 pi-led = ["RPi.GPIO>=0.7", "rpi-ws281x>=5.0"]
 # Camera stack: needs `sudo apt install libcap-dev` (and usually works better via
 # apt `python3-picamera2` + venv --system-site-packages than pure pip).
-pi = ["gamebot[pi-led]", "picamera2>=0.3"]
+pi = ["gamebot[pi-led]", "picamera2>=0.3", "pygame>=2.5"]
 
 [project.scripts]
 gamebot = "gamebot.main:main"

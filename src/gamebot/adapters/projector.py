@@ -16,7 +16,7 @@ class ProjectorAdapter(ABC):
 
     @abstractmethod
     def poll_key(self, delay_ms: int = 1) -> int:
-        """Return OpenCV waitKey code, or -1."""
+        """Return OpenCV waitKey-style code, or -1."""
 
     @abstractmethod
     def close(self) -> None: ...
@@ -30,7 +30,7 @@ class ProjectorAdapter(ABC):
 
 
 class MockProjector(ProjectorAdapter):
-    """Desktop window standing in for the HDMI projector."""
+    """Desktop window standing in for the HDMI projector (needs OpenCV GUI build)."""
 
     def __init__(self, size: tuple[int, int] = (1280, 720), window_name: str = "schack-projector") -> None:
         self.size = size
@@ -59,7 +59,7 @@ class MockProjector(ProjectorAdapter):
 
 
 class HdmiProjector(ProjectorAdapter):
-    """Fullscreen HDMI output intended for the HY300-clone projector."""
+    """Fullscreen HDMI via pygame (works with opencv-python-headless on the Pi)."""
 
     def __init__(
         self,
@@ -71,26 +71,60 @@ class HdmiProjector(ProjectorAdapter):
         self.window_name = window_name
         self.display_index = display_index
         self._opened = False
+        self._screen = None
+        self._pygame = None
 
     def open(self) -> None:
-        cv2.namedWindow(self.window_name, cv2.WND_PROP_FULLSCREEN)
-        cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        try:
+            import pygame
+        except ImportError as exc:
+            raise ImportError(
+                "pygame is required for HDMI projection. On the Pi: pip install pygame"
+            ) from exc
+
+        self._pygame = pygame
+        pygame.display.init()
+        pygame.font.init()
+        pygame.mouse.set_visible(False)
+        self._screen = pygame.display.set_mode(self.size, pygame.FULLSCREEN)
+        pygame.display.set_caption(self.window_name)
         self._opened = True
 
     def show(self, frame_bgr: np.ndarray) -> None:
         if not self._opened:
             self.open()
+        assert self._pygame is not None and self._screen is not None
         if frame_bgr.shape[1] != self.size[0] or frame_bgr.shape[0] != self.size[1]:
             frame_bgr = cv2.resize(frame_bgr, self.size)
-        cv2.imshow(self.window_name, frame_bgr)
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        # pygame wants (w, h, 3); OpenCV is (h, w, 3)
+        surface = self._pygame.surfarray.make_surface(np.transpose(rgb, (1, 0, 2)))
+        self._screen.blit(surface, (0, 0))
+        self._pygame.display.flip()
 
     def poll_key(self, delay_ms: int = 1) -> int:
-        return cv2.waitKey(delay_ms) & 0xFF if delay_ms >= 0 else -1
+        if self._pygame is None:
+            return -1
+        pg = self._pygame
+        for event in pg.event.get():
+            if event.type == pg.KEYDOWN:
+                if event.key == pg.K_ESCAPE:
+                    return 27
+                if event.key == pg.K_q:
+                    return ord("q")
+                if event.unicode and len(event.unicode) == 1:
+                    return ord(event.unicode)
+            if event.type == pg.QUIT:
+                return 27
+        pg.time.wait(max(0, int(delay_ms)))
+        return -1
 
     def close(self) -> None:
-        if self._opened:
-            cv2.destroyWindow(self.window_name)
-            self._opened = False
+        if self._pygame is not None:
+            self._pygame.display.quit()
+            self._pygame = None
+        self._screen = None
+        self._opened = False
 
 
 def create_projector(kind: str, size: tuple[int, int]) -> ProjectorAdapter:
