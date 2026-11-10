@@ -213,7 +213,10 @@ class UIRenderer:
             cv2.line(frame, (px0, py0 - 6), (px1, py0 - 6), (0, 255, 255), 4)
 
     def _draw_arrow(self, frame: np.ndarray, data: dict) -> None:
-        cv2.arrowedLine(frame, self._to_px(data["p0"]), self._to_px(data["p1"]), data["color"], 4, tipLength=0.25)
+        p0, p1 = self._to_px(data["p0"]), self._to_px(data["p1"])
+        color = data["color"]
+        cv2.arrowedLine(frame, p0, p1, (0, 0, 0), 10, tipLength=0.28)  # outline
+        cv2.arrowedLine(frame, p0, p1, color, 6, tipLength=0.28)
 
     def _draw_text(self, frame: np.ndarray, data: dict) -> None:
         cv2.putText(frame, data["text"], self._to_px(data["xy"]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, data["color"], 2)
