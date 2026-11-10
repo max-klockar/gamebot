@@ -99,8 +99,83 @@ def estimate_homography(src: np.ndarray, dst: np.ndarray) -> np.ndarray | None:
     if len(src) < 4 or len(dst) < 4:
         return None
     n = min(len(src), len(dst))
-    H, mask = cv2.findHomography(src[:n], dst[:n], cv2.RANSAC, 5.0)
+    H, mask = cv2.findHomography(src[:n], dst[:n], 0)
     return H
+
+
+def order_quad_tl_tr_br_bl(pts: np.ndarray) -> np.ndarray:
+    """Sort 4 points into top-left, top-right, bottom-right, bottom-left."""
+    if len(pts) < 4:
+        raise ValueError("need 4 points")
+    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 2)[:4]
+    by_y = pts[np.argsort(pts[:, 1])]
+    top = by_y[:2][np.argsort(by_y[:2, 0])]
+    bot = by_y[2:][np.argsort(by_y[2:, 0])]
+    return np.array([top[0], top[1], bot[1], bot[0]], dtype=np.float64)
+
+
+CORNER_LABELS = ("TL", "TR", "BR", "BL")
+
+
+class CornerCalibration:
+    """Interactive 4-dot calibrate: nudge projected dots onto board corners.
+
+    Pieces can stay on the board; only the four corners need a clear spot for the dots.
+    """
+
+    def __init__(self, projector_size: tuple[int, int], step_px: float = 8.0) -> None:
+        self.projector_size = projector_size
+        self.step_px = step_px
+        self.active = 0
+        self.points = self._default_points(projector_size)
+
+    @staticmethod
+    def _default_points(size: tuple[int, int]) -> np.ndarray:
+        w, h = size
+        # Start as a generous inset rectangle — user nudges onto real board corners.
+        x0, x1 = w * 0.22, w * 0.78
+        y0, y1 = h * 0.18, h * 0.82
+        return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64)
+
+    def next_corner(self) -> None:
+        self.active = (self.active + 1) % 4
+
+    def nudge(self, dx: float, dy: float) -> None:
+        w, h = self.projector_size
+        self.points[self.active, 0] = float(np.clip(self.points[self.active, 0] + dx, 12, w - 12))
+        self.points[self.active, 1] = float(np.clip(self.points[self.active, 1] + dy, 12, h - 12))
+
+    def render(self) -> np.ndarray:
+        w, h = self.projector_size
+        frame = np.zeros((h, w, 3), dtype=np.uint8)
+        # Dim quad so user sees the board outline they're aiming for
+        poly = self.points.astype(np.int32)
+        cv2.polylines(frame, [poly], True, (40, 40, 40), 2)
+        for i, (x, y) in enumerate(self.points):
+            pt = (int(x), int(y))
+            active = i == self.active
+            color = (0, 255, 255) if active else (255, 255, 255)
+            r = 22 if active else 14
+            cv2.circle(frame, pt, r, color, -1)
+            cv2.circle(frame, pt, r + 3, (0, 0, 0), 2)
+            cv2.putText(
+                frame,
+                CORNER_LABELS[i],
+                (pt[0] + 18, pt[1] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                color,
+                2,
+            )
+        lines = [
+            "4-corner calibrate (pieces OK)",
+            "Arrows: move dot   Tab/n: next corner",
+            "Enter or c: finish",
+            f"Active: {CORNER_LABELS[self.active]}",
+        ]
+        for i, line in enumerate(lines):
+            cv2.putText(frame, line, (36, 48 + i * 32), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (220, 220, 220), 2)
+        return frame
 
 
 class Calibrator:
@@ -121,8 +196,7 @@ class Calibrator:
         board_corners_camera: np.ndarray | None = None,
     ) -> CalibrationData | None:
         H_cam_to_proj = estimate_homography(camera_pts, projector_pts)
-        H_proj_to_cam = estimate_homography(projector_pts, camera_pts)
-        if H_cam_to_proj is None or H_proj_to_cam is None:
+        if H_cam_to_proj is None:
             return None
 
         # Table → projector: map board corners in mm to a default centered rect in projector
@@ -150,6 +224,29 @@ class Calibrator:
             H_table_to_projector=H_table_to_projector,
             H_camera_to_projector=H_cam_to_proj,
             board_corners_camera=board_corners_camera,
+            projector_size=self.projector_size,
+            camera_size=self.camera_size,
+        )
+
+    def solve_from_board_corners(
+        self,
+        projector_corners: np.ndarray,
+        camera_corners: np.ndarray,
+    ) -> CalibrationData | None:
+        """4 correspondences: table board corners ↔ projector dots ↔ camera dots (TL,TR,BR,BL)."""
+        table = self.layout.board_corners()
+        proj = order_quad_tl_tr_br_bl(projector_corners)
+        cam = order_quad_tl_tr_br_bl(camera_corners)
+        H_table_to_projector = estimate_homography(table, proj)
+        H_table_to_camera = estimate_homography(table, cam)
+        H_camera_to_projector = estimate_homography(cam, proj)
+        if H_table_to_projector is None or H_table_to_camera is None or H_camera_to_projector is None:
+            return None
+        return CalibrationData(
+            H_table_to_camera=H_table_to_camera,
+            H_table_to_projector=H_table_to_projector,
+            H_camera_to_projector=H_camera_to_projector,
+            board_corners_camera=cam,
             projector_size=self.projector_size,
             camera_size=self.camera_size,
         )

@@ -106,8 +106,20 @@ class HdmiProjector(ProjectorAdapter):
         if self._pygame is None:
             return -1
         pg = self._pygame
+        # Match common OpenCV waitKey arrow codes on Linux.
+        arrows = {
+            pg.K_LEFT: 81,
+            pg.K_UP: 82,
+            pg.K_RIGHT: 83,
+            pg.K_DOWN: 84,
+            pg.K_TAB: 9,
+            pg.K_RETURN: 13,
+            pg.K_KP_ENTER: 13,
+        }
         for event in pg.event.get():
             if event.type == pg.KEYDOWN:
+                if event.key in arrows:
+                    return arrows[event.key]
                 if event.key == pg.K_ESCAPE:
                     return 27
                 if event.key == pg.K_q:

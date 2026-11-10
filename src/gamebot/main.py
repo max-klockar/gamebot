@@ -10,7 +10,7 @@ import numpy as np
 from gamebot.adapters import create_camera, create_projector
 from gamebot.adapters.camera import MockCamera
 from gamebot.adapters.led import LedRing, create_led_backend
-from gamebot.calibration import CalibrationData, Calibrator
+from gamebot.calibration import CalibrationData, Calibrator, CornerCalibration, detect_dots
 from gamebot.config import AppConfig
 from gamebot.geometry import TableLayout, warp_points
 from gamebot.plugins import IdentifyContext, RuntimeHandles, discover_plugins, identify_matches
@@ -40,6 +40,7 @@ class App:
         self.led.thermal.hot_celsius = config.hot_celsius
         self.calibrator = Calibrator(self.layout, config.projector_size, config.camera_size)
         self.calibration: CalibrationData | None = None
+        self.corner_cal: CornerCalibration | None = None
         self.renderer = UIRenderer(
             config.projector_size, self.layout, config.identity_H(), debug=config.debug_overlay
         )
@@ -80,16 +81,22 @@ class App:
         while True:
             frame = self.camera.read()
             scene = self._build_scene()
-            active = self.dwell._state.zone_id
-            progress = self.dwell.progress()
-            proj = self.renderer.render(scene, progress, active)
+            if self.phase == HostPhase.CALIBRATE:
+                if self.corner_cal is None:
+                    self.corner_cal = CornerCalibration(self.config.projector_size)
+                proj = self.corner_cal.render()
+            else:
+                active = self.dwell._state.zone_id
+                progress = self.dwell.progress()
+                proj = self.renderer.render(scene, progress, active)
             self._draw_led_debug(proj)
             self.projector.show(proj)
 
-            token_mm = self._token_table_mm(frame)
-            clicked = self.dwell.update(scene.zones, token_mm)
-            if clicked:
-                self._handle_zone(clicked)
+            if self.phase != HostPhase.CALIBRATE:
+                token_mm = self._token_table_mm(frame)
+                clicked = self.dwell.update(scene.zones, token_mm)
+                if clicked:
+                    self._handle_zone(clicked)
 
             key = self.projector.poll_key(30)
             if key in (ord("q"), 27):
@@ -105,6 +112,7 @@ class App:
                 splash_frames += 1
                 if splash_frames > 15:
                     self.phase = HostPhase.CALIBRATE
+                    self.corner_cal = CornerCalibration(self.config.projector_size)
                     splash_frames = 0
             elif self.phase == HostPhase.IDENTIFY:
                 self._run_identify(frame)
@@ -149,17 +157,8 @@ class App:
             sc.add_text("Place a game on the table", self.layout.margin_mm, self.layout.margin_mm + 40)
             return sc
         if self.phase == HostPhase.CALIBRATE:
-            sc = Scene(self.layout)
-            sc.title = "Calibrate"
-            sc.add_button(
-                "cal:done",
-                "Done",
-                self.layout.margin_mm + self.layout.board_size_mm + 10,
-                self.layout.margin_mm,
-                100,
-                40,
-            )
-            return sc
+            # Drawn in projector pixels by CornerCalibration.render(); scene unused.
+            return Scene(self.layout)
         if self.phase == HostPhase.CHOOSE:
             games = [(p.id, p.name, p.icon()) for p in self.candidates]
             if not games:
@@ -175,10 +174,6 @@ class App:
         return sc
 
     def _handle_zone(self, zone_id: str) -> None:
-        if zone_id == "cal:done":
-            self._run_calibration()
-            self.phase = HostPhase.IDENTIFY
-            return
         if zone_id.startswith("game:"):
             pid = zone_id.split(":", 1)[1]
             plugin = next((p for p in self.candidates if p.id == pid), None)
@@ -190,27 +185,37 @@ class App:
         if self.phase == HostPhase.PLAYING and self.session is not None:
             self.session.handle_zone(zone_id)
 
-    def _run_calibration(self) -> None:
-        pattern, proj_pts = self.calibrator.pattern()
-        self.projector.show(pattern)
-        self.projector.poll_key(200)
+    def _finish_corner_calibration(self) -> None:
+        if self.corner_cal is None:
+            self.corner_cal = CornerCalibration(self.config.projector_size)
+        # Show final dots briefly so exposure/AF can settle, then capture.
+        self.projector.show(self.corner_cal.render())
+        self.projector.poll_key(250)
         frame = self.camera.read()
-        from gamebot.calibration import detect_dots
+        cam_pts = detect_dots(frame, expected=4)
+        proj_pts = self.corner_cal.points
+        cal = None
+        if cam_pts is not None and len(cam_pts) >= 4:
+            cal = self.calibrator.solve_from_board_corners(proj_pts, cam_pts[:4])
+        if cal is None:
+            # Still apply projector↔table from manual corners; camera falls back to mock layout.
+            print("corner calibrate: camera dots weak — projector mapping kept, camera approx")
+            table = self.layout.board_corners()
+            from gamebot.calibration import estimate_homography, order_quad_tl_tr_br_bl
 
-        cam_pts = detect_dots(frame, expected=len(proj_pts))
-        if cam_pts is None or len(cam_pts) < 8:
-            cal = self.calibrator.mock_calibrate()
-        else:
-            order_p = np.lexsort((proj_pts[:, 0], proj_pts[:, 1]))
-            order_c = np.lexsort((cam_pts[:, 0], cam_pts[:, 1]))
-            n = min(len(order_p), len(order_c))
-            cal = self.calibrator.solve_from_correspondences(proj_pts[order_p[:n]], cam_pts[order_c[:n]])
-            if cal is None:
-                cal = self.calibrator.mock_calibrate()
-        assert cal is not None
+            proj = order_quad_tl_tr_br_bl(proj_pts)
+            H_tp = estimate_homography(table, proj)
+            mock = self.calibrator.mock_calibrate()
+            if H_tp is not None:
+                mock.H_table_to_projector = H_tp
+                mock.H_camera_to_projector = H_tp @ np.linalg.inv(mock.H_table_to_camera)
+            cal = mock
         self.calibration = cal
         cal.save(self.config.calibration_path)  # type: ignore[arg-type]
         self.renderer.set_homography(cal.H_table_to_projector)
+        self.corner_cal = None
+        self.phase = HostPhase.IDENTIFY
+        self.dwell.reset()
 
     def _token_table_mm(self, frame: np.ndarray) -> tuple[float, float] | None:
         det = self.token_detector.detect(frame)
@@ -221,6 +226,29 @@ class App:
         return float(pts[0]), float(pts[1])
 
     def _handle_key(self, key: int, scene: Scene) -> None:
+        if self.phase == HostPhase.CALIBRATE and self.corner_cal is not None:
+            step = self.corner_cal.step_px
+            if key in (81, ord("a")):  # left / a
+                self.corner_cal.nudge(-step, 0)
+                return
+            if key in (83, ord("d")):  # right / d
+                self.corner_cal.nudge(step, 0)
+                return
+            if key in (82, ord("w")):  # up / w
+                self.corner_cal.nudge(0, -step)
+                return
+            if key in (84, ord("s")):  # down / s
+                self.corner_cal.nudge(0, step)
+                return
+            if key in (9, ord("n"), ord(" ")):  # tab / n / space
+                self.corner_cal.next_corner()
+                return
+            if key in (13, ord("c")):  # enter / c
+                self._finish_corner_calibration()
+                return
+            if ord("1") <= key <= ord("4"):
+                self.corner_cal.active = key - ord("1")
+                return
         if ord("1") <= key <= ord("9"):
             idx = key - ord("1")
             if idx < len(scene.zones):
@@ -228,10 +256,8 @@ class App:
                 self.dwell.reset()
             return
         if key == ord("c"):
-            if self.phase == HostPhase.CALIBRATE:
-                self._handle_zone("cal:done")
-            else:
-                self.phase = HostPhase.CALIBRATE
+            self.phase = HostPhase.CALIBRATE
+            self.corner_cal = CornerCalibration(self.config.projector_size)
             return
         if key == ord("h"):
             hot = (

@@ -14,7 +14,13 @@ from chess_plugin.ui import load_icon
 from chess_plugin.vision import hypothesize_moves, occupancy_from_board
 from gamebot.adapters.camera import MockCamera
 from gamebot.adapters.led import LedMode, LedRing, MockLedBackend, ThermalSensor, pulse_brightness
-from gamebot.calibration import Calibrator, CalibrationData, make_grid_pattern
+from gamebot.calibration import (
+    Calibrator,
+    CalibrationData,
+    CornerCalibration,
+    make_grid_pattern,
+    order_quad_tl_tr_br_bl,
+)
 from gamebot.config import AppConfig
 from gamebot.geometry import TableLayout
 from gamebot.plugins import IdentifyContext, discover_plugins, identify_matches
@@ -118,6 +124,19 @@ def test_hypothesize_and_calibration(tmp_path: Path) -> None:
     assert CalibrationData.load(tmp_path / "cal.json").projector_size == (1280, 720)
     img, pts = make_grid_pattern((640, 480), cols=4, rows=3)
     assert len(pts) == 12
+    messy = np.array([[200.0, 10.0], [10.0, 10.0], [10.0, 200.0], [200.0, 200.0]])
+    ordered = order_quad_tl_tr_br_bl(messy)
+    assert ordered[0].tolist() == [10.0, 10.0]
+    assert ordered[2].tolist() == [200.0, 200.0]
+    corners = CornerCalibration((1280, 720))
+    corners.nudge(50, 0)
+    cam = corners.points.copy()
+    cam[:, 0] *= 0.9
+    cam[:, 1] *= 0.9
+    cal4 = Calibrator(TableLayout(), (1280, 720), (1280, 720)).solve_from_board_corners(
+        corners.points, cam
+    )
+    assert cal4 is not None
 
 
 def test_led_modes() -> None:
