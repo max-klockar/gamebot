@@ -127,9 +127,14 @@ def run_auto_calibrate(camera: str, projector: str, out_jpg: Path, settle_s: flo
     cv2.imwrite(str(out_jpg), result.camera_debug_bgr)
     cal_path = out_jpg.with_suffix(".json")
     result.calibration.save(cal_path)
+    # Also install where `gamebot` loads calibration from.
+    gamebot_cal = Path.home() / ".gamebot" / "calibration.json"
+    gamebot_cal.parent.mkdir(parents=True, exist_ok=True)
+    result.calibration.save(gamebot_cal)
     print(result.message)
     print(f"wrote {out_jpg}")
     print(f"wrote {cal_path}")
+    print(f"wrote {gamebot_cal}")
     print("showing green verify grid on projector for 8s — check table alignment")
     t_end = time.time() + 8.0
     while time.time() < t_end:

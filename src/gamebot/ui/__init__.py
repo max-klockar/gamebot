@@ -145,8 +145,9 @@ class UIRenderer:
     def render(self, scene: Scene, dwell_progress: float = 0.0, active_zone: str | None = None) -> np.ndarray:
         w, h = self.size
         frame = np.zeros((h, w, 3), dtype=np.uint8)
+        # Always-on board frame: if a kid nudges the board, they can slide it back into the light.
         corners = warp_points(self.layout.board_corners(), self.H).astype(np.int32)
-        cv2.polylines(frame, [corners], True, (60, 60, 60), 2)
+        cv2.polylines(frame, [corners], True, (0, 200, 140), 4)
 
         for prim in scene.prims:
             if prim.kind == "button":
