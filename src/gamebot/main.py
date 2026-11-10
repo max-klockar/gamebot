@@ -10,6 +10,7 @@ import numpy as np
 from gamebot.adapters import create_camera, create_projector
 from gamebot.adapters.camera import MockCamera
 from gamebot.adapters.led import LedRing, create_led_backend
+from gamebot.audio import AmbientPlayer
 from gamebot.calibration import Calibrator, CalibrationData, render_verify_overlay
 from gamebot.config import AppConfig
 from gamebot.geometry import TableLayout, warp_points
@@ -50,6 +51,7 @@ class App:
         self.phase = HostPhase.SPLASH
         self.candidates: list[GamePlugin] = []
         self.session: GameSession | None = None
+        self.ambient = AmbientPlayer()
         self._thermal_check_counter = 0
         self._cal_frames = 0
         self._verify_frames = 0
@@ -75,6 +77,7 @@ class App:
         try:
             return self._loop()
         finally:
+            self.ambient.stop()
             self.led.close()
             self.projector.close()
             self.camera.close()
@@ -138,6 +141,7 @@ class App:
             elif self.phase == HostPhase.PLAYING and self.session is not None:
                 self.session.tick(frame)
                 if self.session.wants_exit():
+                    self.ambient.stop()
                     self.session = None
                     self.phase = HostPhase.IDENTIFY
 
@@ -211,6 +215,7 @@ class App:
         self.session.on_enter()
         self.phase = HostPhase.PLAYING
         self.dwell.reset()
+        self.ambient.start()
 
     def _build_scene(self) -> Scene:
         if self.phase == HostPhase.SPLASH:
@@ -262,6 +267,7 @@ class App:
                 self.dwell.reset()
             return
         if key == ord("c"):
+            self.ambient.stop()
             self.phase = HostPhase.CALIBRATE
             self._cal_frames = 0
             return
