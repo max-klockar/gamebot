@@ -13,6 +13,8 @@ license-files = ["LICENSE.md", "NOTICE"]
 dependencies = [
   "numpy>=1.26",
   "opencv-python-headless>=4.9",
+  # Used by TableLayout.square_center (chess.Square). Keep until geometry is game-agnostic.
+  "python-chess>=1.999",
 ]
 
 [project.optional-dependencies]
