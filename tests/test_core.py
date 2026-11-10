@@ -19,8 +19,10 @@ from gamebot.calibration import (
     CalibrationData,
     detect_chessboard_outer_corners,
     detect_color_corners,
+    detect_dot_by_difference,
     make_grid_pattern,
     order_quad_tl_tr_br_bl,
+    quad_looks_sane,
     render_color_corner_pattern,
 )
 from gamebot.config import AppConfig
@@ -136,6 +138,17 @@ def test_hypothesize_and_calibration(tmp_path: Path) -> None:
     assert found is not None and len(found) == 4
     cal = Calibrator(TableLayout(), (640, 360), (640, 360)).auto_calibrate(pattern)
     assert cal is not None
+
+
+def test_difference_dot_ignores_static_lamp() -> None:
+    dark = np.zeros((240, 320, 3), dtype=np.uint8)
+    cv2.circle(dark, (40, 40), 12, (255, 255, 255), -1)  # static lamp
+    lit = dark.copy()
+    cv2.circle(lit, (200, 150), 18, (0, 0, 255), -1)  # projected dot
+    pt = detect_dot_by_difference(dark, lit)
+    assert pt is not None
+    assert abs(pt[0] - 200) < 8 and abs(pt[1] - 150) < 8
+    assert not quad_looks_sane(np.array([[10, 10], [12, 10], [11, 11], [10, 40]], dtype=np.float64))
 
 
 def test_chessboard_center_with_start_pieces() -> None:

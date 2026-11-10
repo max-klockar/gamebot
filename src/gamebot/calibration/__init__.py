@@ -190,6 +190,62 @@ def detect_bright_dot(frame_bgr: np.ndarray, min_area: float = 80.0) -> tuple[fl
     return _largest_blob_center(mask, min_area=min_area)
 
 
+def detect_dot_by_difference(
+    dark_bgr: np.ndarray,
+    lit_bgr: np.ndarray,
+    min_area: float = 40.0,
+    min_peak: float = 25.0,
+) -> tuple[float, float] | None:
+    """Locate a projected dot as the lit−dark peak (ignores lamps/chairs that stay on)."""
+    dark = cv2.cvtColor(dark_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    lit = cv2.cvtColor(lit_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    diff = cv2.GaussianBlur(np.clip(lit - dark, 0, 255), (11, 11), 0)
+    peak = float(diff.max())
+    if peak < min_peak:
+        return None
+    thr = max(min_peak, peak * 0.45)
+    _, mask = cv2.threshold(diff.astype(np.uint8), thr, 255, cv2.THRESH_BINARY)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    return _largest_blob_center(mask, min_area=min_area)
+
+
+def quad_looks_sane(
+    pts: np.ndarray,
+    image_size: tuple[int, int] | None = None,
+    *,
+    min_area: float = 8000.0,
+    min_edge: float = 40.0,
+    max_out_frac: float = 0.08,
+) -> bool:
+    """Reject collapsed / crossed / off-image quads that blow up homographies."""
+    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
+    if len(pts) != 4 or not np.isfinite(pts).all():
+        return False
+    ordered = order_quad_tl_tr_br_bl(pts)
+    area = abs(float(cv2.contourArea(ordered.astype(np.float32))))
+    if area < min_area:
+        return False
+    if not cv2.isContourConvex(ordered.astype(np.float32)):
+        return False
+    for i in range(4):
+        d = float(np.linalg.norm(ordered[i] - ordered[(i + 1) % 4]))
+        if d < min_edge:
+            return False
+    # Diagonals should be somewhat similar (not a dart / spike).
+    d1 = float(np.linalg.norm(ordered[0] - ordered[2]))
+    d2 = float(np.linalg.norm(ordered[1] - ordered[3]))
+    if min(d1, d2) < 1e-3 or max(d1, d2) / min(d1, d2) > 2.8:
+        return False
+    if image_size is not None:
+        w, h = image_size
+        margin_x, margin_y = w * max_out_frac, h * max_out_frac
+        if np.any(ordered[:, 0] < -margin_x) or np.any(ordered[:, 0] > w + margin_x):
+            return False
+        if np.any(ordered[:, 1] < -margin_y) or np.any(ordered[:, 1] > h + margin_y):
+            return False
+    return True
+
+
 def detect_color_corners_partial(
     frame_bgr: np.ndarray,
 ) -> list[tuple[float, float] | None]:
@@ -248,30 +304,53 @@ def capture_corners_sequential(
     show_and_grab_frame,
     settle: int = 3,
 ) -> np.ndarray | None:
-    """Show one colour at a time; locate each as the brightest blob in camera.
+    """Show one colour at a time; locate each via lit−dark difference (not room lights).
 
     ``show_and_grab_frame(bgr_image) -> camera_bgr``.
     """
-    cam_pts = []
+    w, h = projector_size
+    black = np.zeros((h, w, 3), dtype=np.uint8)
+    cam_pts: list[tuple[float, float]] = []
     for i, ((label, bgr, _), (x, y)) in enumerate(zip(COLOR_CORNERS, proj_pts)):
+        dark = None
+        for _ in range(settle):
+            dark = show_and_grab_frame(black)
+        assert dark is not None
         img = render_single_color_dot(
             projector_size, (float(x), float(y)), bgr, label, status=f"capture {label} ({i + 1}/4)"
         )
-        frame = None
+        lit = None
         for _ in range(settle):
-            frame = show_and_grab_frame(img)
-        assert frame is not None
-        # Prefer bright-dot; refine with hue if possible
-        pt = detect_bright_dot(frame)
+            lit = show_and_grab_frame(img)
+        assert lit is not None
+        pt = detect_dot_by_difference(dark, lit)
         if pt is None:
-            partial = detect_color_corners_partial(frame)
+            # Fallback: bright peak on lit frame, but still must move vs dark.
+            lit_pt = detect_bright_dot(lit)
+            dark_pt = detect_bright_dot(dark)
+            if lit_pt is not None and (
+                dark_pt is None or float(np.linalg.norm(np.array(lit_pt) - np.array(dark_pt))) > 25.0
+            ):
+                pt = lit_pt
+        if pt is None:
+            partial = detect_color_corners_partial(lit)
             pt = partial[i]
         if pt is None:
             print(f"sequential capture missed {label}")
             return None
+        # Reject latching onto the same blob twice.
+        for prev in cam_pts:
+            if float(np.linalg.norm(np.array(pt) - np.array(prev))) < 30.0:
+                print(f"sequential {label} too close to previous point — rejecting")
+                return None
         print(f"sequential {label} @ camera ({pt[0]:.0f},{pt[1]:.0f})")
         cam_pts.append(pt)
-    return np.array(cam_pts, dtype=np.float64)
+    cam = np.array(cam_pts, dtype=np.float64)
+    # Camera size unknown here; geometric checks without image bounds.
+    if not quad_looks_sane(cam, min_area=4000.0, min_edge=35.0):
+        print("sequential quad looks collapsed/crossed — rejecting")
+        return None
+    return cam
 
 def _clamp_quad_center(size: tuple[int, int], cx: float, cy: float, scale: float) -> tuple[float, float, float]:
     w, h = size
@@ -464,6 +543,7 @@ def _outer_from_inner_grid(grid: np.ndarray, full_inner: tuple[int, int] = (7, 7
 def detect_chessboard_outer_corners(frame_bgr: np.ndarray) -> np.ndarray | None:
     """Outer board quad (TL,TR,BR,BL). Tries full 7x7, then center bands with pieces on."""
     gray0 = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    h, w = gray0.shape[:2]
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     variants = (gray0, clahe.apply(gray0), cv2.bitwise_not(gray0), cv2.bitwise_not(clahe.apply(gray0)))
 
@@ -475,7 +555,11 @@ def detect_chessboard_outer_corners(frame_bgr: np.ndarray) -> np.ndarray | None:
                 continue
             corners = _refine_corners(gray0, corners)
             grid = corners.reshape(rows, cols, 2)
-            return _outer_from_inner_grid(grid)
+            outer = _outer_from_inner_grid(grid)
+            # Partial patterns must land on a plausible board-sized quad in-frame.
+            min_area = (w * h) * 0.02
+            if quad_looks_sane(outer, (w, h), min_area=min_area, min_edge=min(w, h) * 0.08):
+                return order_quad_tl_tr_br_bl(outer)
     return None
 
 
@@ -572,6 +656,10 @@ class Calibrator:
 
         if color_cam is None:
             return None
+        fh, fw = camera_frame_bgr.shape[:2]
+        if not quad_looks_sane(color_cam, (fw, fh), min_area=(fw * fh) * 0.01, min_edge=30.0):
+            print("colour quad not sane — refusing solve (would make spoke-grid)")
+            return None
 
         # Colour order is fixed TL..BL — do not spatial-resort (flip-safe).
         H_cam_to_proj = estimate_homography(color_cam, proj_pts)
@@ -581,6 +669,12 @@ class Calibrator:
         table = self.layout.board_corners()
         if board_cam is not None:
             board_cam = order_quad_tl_tr_br_bl(board_cam)
+            if not quad_looks_sane(board_cam, (fw, fh), min_area=(fw * fh) * 0.02, min_edge=min(fw, fh) * 0.08):
+                print("chessboard quad failed sanity — falling back to colours only")
+                board_cam = None
+                used_board = False
+
+        if board_cam is not None:
             H_table_to_camera = estimate_homography(table, board_cam)
             H_table_to_projector = H_cam_to_proj @ H_table_to_camera if H_table_to_camera is not None else None
             msg = "ok: colours + chessboard (center OK with pieces in start)"
@@ -592,6 +686,11 @@ class Calibrator:
             msg = "ok: colours only — verify grid on colour rectangle (board contrast too low?)"
 
         if H_table_to_camera is None or H_table_to_projector is None:
+            return None
+        # Final check: projected board outline must be a sane quad in projector space.
+        proj_board = warp_points(table, H_table_to_projector)
+        if not quad_looks_sane(proj_board, self.projector_size, min_area=5000.0, min_edge=40.0):
+            print("verify grid would be degenerate — refusing solve")
             return None
         cal = CalibrationData(
             H_table_to_camera=H_table_to_camera,
