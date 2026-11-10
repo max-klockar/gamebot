@@ -156,8 +156,17 @@ class App:
             self.projector.poll_key(20)
             return self.camera.read()
 
+        def show_frame(image: np.ndarray) -> np.ndarray:
+            for _ in range(2):
+                self.projector.show(image)
+                self.projector.poll_key(25)
+                self.camera.read()
+            self.projector.show(image)
+            self.projector.poll_key(25)
+            return self.camera.read()
+
         print("auto calibrate: searching colour corners…")
-        result = self.calibrator.auto_calibrate_with_search(show_and_grab)
+        result = self.calibrator.auto_calibrate_with_search(show_and_grab, show_frame)
         if result is None:
             print("auto calibrate failed — keeping previous / mock calibration")
             if self.calibration is None:

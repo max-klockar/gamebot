@@ -102,8 +102,17 @@ def run_auto_calibrate(camera: str, projector: str, out_jpg: Path, settle_s: flo
         proj.poll_key(20)
         return cam.read()
 
+    def show_frame(image: np.ndarray) -> np.ndarray:
+        for _ in range(2):
+            proj.show(image)
+            proj.poll_key(25)
+            cam.read()
+        proj.show(image)
+        proj.poll_key(25)
+        return cam.read()
+
     print("searching for colour corners (start tight/center, then steer)…")
-    result = calibrator.auto_calibrate_with_search(show_and_grab)
+    result = calibrator.auto_calibrate_with_search(show_and_grab, show_frame)
     if result is None:
         # Last frame dump
         frame = cam.read()

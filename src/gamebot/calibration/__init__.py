@@ -162,13 +162,13 @@ def detect_dots(frame_bgr: np.ndarray, expected: int) -> np.ndarray | None:
     return np.array(centers, dtype=np.float64)
 
 
-def _largest_blob_center(mask: np.ndarray) -> tuple[float, float] | None:
+def _largest_blob_center(mask: np.ndarray, min_area: float = 40.0) -> tuple[float, float] | None:
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best = None
-    best_area = 40.0
+    best_area = min_area
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < best_area or area > 30000:
+        if area < best_area or area > 50000:
             continue
         m = cv2.moments(cnt)
         if m["m00"] == 0:
@@ -178,18 +178,40 @@ def _largest_blob_center(mask: np.ndarray) -> tuple[float, float] | None:
     return best
 
 
+def detect_bright_dot(frame_bgr: np.ndarray, min_area: float = 80.0) -> tuple[float, float] | None:
+    """Find the brightest compact blob — robust when projector colours blow out to white."""
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (11, 11), 0)
+    # Top percentile threshold so we track projector, not room lights
+    thr_val = float(np.percentile(blur, 99.2))
+    thr_val = max(thr_val, 180.0)
+    _, mask = cv2.threshold(blur, thr_val, 255, cv2.THRESH_BINARY)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    return _largest_blob_center(mask, min_area=min_area)
+
+
 def detect_color_corners_partial(
     frame_bgr: np.ndarray,
 ) -> list[tuple[float, float] | None]:
-    """Per-colour camera centers (TL,TR,BR,BL); None if that colour not found."""
+    """Per-colour camera centers (TL,TR,BR,BL); None if that colour not found.
+
+    Prefer bright+hue; fall back to hue-only. Still weak if all four are shown at once
+    and overexposed — prefer ``capture_corners_sequential``.
+    """
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    bright = cv2.threshold(gray, max(120, float(np.percentile(gray, 96))), 255, cv2.THRESH_BINARY)[1]
     out: list[tuple[float, float] | None] = []
     for _label, _bgr, ranges in COLOR_CORNERS:
-        mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        hue = np.zeros(hsv.shape[:2], dtype=np.uint8)
         for lo, hi in ranges:
-            mask = cv2.bitwise_or(mask, cv2.inRange(hsv, np.array(lo), np.array(hi)))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-        out.append(_largest_blob_center(mask))
+            hue = cv2.bitwise_or(hue, cv2.inRange(hsv, np.array(lo), np.array(hi)))
+        hue = cv2.morphologyEx(hue, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        # Prefer hue∩bright (rejects laptop/clothes); fall back to hue for dim reds etc.
+        center = _largest_blob_center(cv2.bitwise_and(hue, bright), min_area=50.0)
+        if center is None:
+            center = _largest_blob_center(hue, min_area=50.0)
+        out.append(center)
     return out
 
 
@@ -201,6 +223,56 @@ def detect_color_corners(frame_bgr: np.ndarray) -> np.ndarray | None:
     return np.array(partial, dtype=np.float64)
 
 
+def render_single_color_dot(
+    size: tuple[int, int],
+    point: tuple[float, float],
+    bgr: tuple[int, int, int],
+    label: str,
+    status: str = "",
+) -> np.ndarray:
+    """One coloured dot only — for sequential capture (avoids blow-out confusion)."""
+    w, h = size
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+    pt = (int(point[0]), int(point[1]))
+    cv2.circle(frame, pt, 40, bgr, -1)
+    cv2.circle(frame, pt, 46, (255, 255, 255), 3)
+    cv2.putText(frame, label, (pt[0] + 50, pt[1] + 10), cv2.FONT_HERSHEY_SIMPLEX, 1.2, bgr, 2)
+    if status:
+        cv2.putText(frame, status, (40, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (220, 220, 220), 2)
+    return frame
+
+
+def capture_corners_sequential(
+    projector_size: tuple[int, int],
+    proj_pts: np.ndarray,
+    show_and_grab_frame,
+    settle: int = 3,
+) -> np.ndarray | None:
+    """Show one colour at a time; locate each as the brightest blob in camera.
+
+    ``show_and_grab_frame(bgr_image) -> camera_bgr``.
+    """
+    cam_pts = []
+    for i, ((label, bgr, _), (x, y)) in enumerate(zip(COLOR_CORNERS, proj_pts)):
+        img = render_single_color_dot(
+            projector_size, (float(x), float(y)), bgr, label, status=f"capture {label} ({i + 1}/4)"
+        )
+        frame = None
+        for _ in range(settle):
+            frame = show_and_grab_frame(img)
+        assert frame is not None
+        # Prefer bright-dot; refine with hue if possible
+        pt = detect_bright_dot(frame)
+        if pt is None:
+            partial = detect_color_corners_partial(frame)
+            pt = partial[i]
+        if pt is None:
+            print(f"sequential capture missed {label}")
+            return None
+        print(f"sequential {label} @ camera ({pt[0]:.0f},{pt[1]:.0f})")
+        cam_pts.append(pt)
+    return np.array(cam_pts, dtype=np.float64)
+
 def _clamp_quad_center(size: tuple[int, int], cx: float, cy: float, scale: float) -> tuple[float, float, float]:
     w, h = size
     scale = float(np.clip(scale, 0.18, 0.95))
@@ -211,109 +283,111 @@ def _clamp_quad_center(size: tuple[int, int], cx: float, cy: float, scale: float
     return cx, cy, scale
 
 
+def _count_bright_blobs(frame_bgr: np.ndarray, max_n: int = 6) -> int:
+    """How many projector-like bright blobs are in view (overexposure-safe)."""
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (11, 11), 0)
+    thr_val = max(170.0, float(np.percentile(blur, 98.5)))
+    _, mask = cv2.threshold(blur, thr_val, 255, cv2.THRESH_BINARY)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    n = 0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if 60 <= area <= 40000:
+            n += 1
+    return min(n, max_n)
+
+
 def search_visible_color_quad(
     projector_size: tuple[int, int],
     show_and_grab,
-    max_iters: int = 36,
-    settle_frames: int = 4,
+    show_frame,
+    max_iters: int = 24,
+    settle_frames: int = 3,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-    """Hill-climb projector quad until all 4 colours are visible in the camera.
+    """Hill-climb until ~4 bright dots are on-camera, then sequential colour capture.
 
-    ``show_and_grab(points, status) -> frame_bgr`` projects the pattern and returns a camera frame.
-
-    Starts tight/centered. If only some dots are seen, shifts the quad toward the
-    centroid of visible dots (in camera space → mirrored into projector nudges by trying
-    neighbors) and grows scale once we have a foothold.
+    ``show_and_grab(points, status) -> frame`` — shows all 4 colours (search).
+    ``show_frame(image) -> frame`` — shows an arbitrary projector image (sequential).
     """
     w, h = projector_size
     cx, cy, scale = w * 0.5, h * 0.5, 0.28
     best_count = -1
     best_state = (cx, cy, scale)
-    best_frame = None
-    best_partial: list[tuple[float, float] | None] = [None, None, None, None]
-
-    step = min(w, h) * 0.04
+    step = min(w, h) * 0.045
 
     for it in range(max_iters):
         cx, cy, scale = _clamp_quad_center(projector_size, cx, cy, scale)
         pts = projector_quad(projector_size, cx, cy, scale)
-        status = f"search {it + 1}/{max_iters}  scale={scale:.2f}  seen=? "
         frame = None
-        partial = [None, None, None, None]
         for _ in range(max(1, settle_frames)):
-            frame = show_and_grab(pts, status)
-            partial = detect_color_corners_partial(frame)
+            frame = show_and_grab(pts, f"search {it + 1}/{max_iters} scale={scale:.2f}")
         assert frame is not None
-        count = sum(1 for p in partial if p is not None)
-        status = f"search {it + 1}/{max_iters}  scale={scale:.2f}  seen={count}/4"
-        # one more show with updated caption
-        frame = show_and_grab(pts, status)
-        partial = detect_color_corners_partial(frame)
-        count = sum(1 for p in partial if p is not None)
-        print(status)
+        count = _count_bright_blobs(frame)
+        print(f"search {it + 1}/{max_iters}  scale={scale:.2f}  bright_blobs≈{count}")
 
         if count > best_count:
             best_count = count
             best_state = (cx, cy, scale)
-            best_frame = frame
-            best_partial = partial
 
-        if count == 4:
-            cam = np.array(partial, dtype=np.float64)
-            return pts, cam, frame
+        if count >= 4:
+            print("enough blobs on table — sequential colour capture…")
+            cam = capture_corners_sequential(projector_size, pts, show_frame)
+            if cam is not None:
+                frame = show_and_grab(pts, "locked")
+                return pts, cam, frame
+            print("sequential failed — keep searching")
 
-        visible = [p for p in partial if p is not None]
-        if visible:
-            # Camera centroid of what we see vs frame center → shift projector the other way
-            # is unknown under flip; try both shift directions + grow.
-            vis = np.array(visible, dtype=np.float64)
-            cam_c = vis.mean(axis=0)
-            fh, fw = frame.shape[:2]
-            # Normalized offset of visible cluster from camera centre
-            ox = (cam_c[0] - fw / 2) / (fw / 2)
-            oy = (cam_c[1] - fh / 2) / (fh / 2)
-            # Candidate moves: toward cluster and opposite (flip-safe), plus grow
-            candidates = [
-                (cx + ox * step * 2, cy + oy * step * 2, scale),
-                (cx - ox * step * 2, cy - oy * step * 2, scale),
-                (cx, cy, min(0.95, scale * 1.12)),
-                (cx + step, cy, scale),
-                (cx - step, cy, scale),
-                (cx, cy + step, scale),
-                (cx, cy - step, scale),
-            ]
-            # Evaluate candidates quickly (1 settle frame each), pick max count then max area proxy
-            ranked = []
-            for ncx, ncy, nsc in candidates:
-                ncx, ncy, nsc = _clamp_quad_center(projector_size, ncx, ncy, nsc)
-                npts = projector_quad(projector_size, ncx, ncy, nsc)
-                nframe = show_and_grab(npts, f"probe seen={count}/4")
-                npartial = detect_color_corners_partial(nframe)
-                ncount = sum(1 for p in npartial if p is not None)
-                ranked.append((ncount, nsc, ncx, ncy, npts, nframe, npartial))
-            ranked.sort(key=lambda t: (t[0], t[1]), reverse=True)
-            ncount, nsc, ncx, ncy, npts, nframe, npartial = ranked[0]
-            cx, cy, scale = ncx, ncy, nsc
-            if ncount == 4:
-                print(f"search locked at scale={scale:.2f}")
-                return npts, np.array(npartial, dtype=np.float64), nframe
-            if ncount >= best_count:
-                best_count = ncount
-                best_state = (cx, cy, scale)
-                best_frame = nframe
-                best_partial = npartial
-        else:
-            # See nothing: grow and jitter around center
-            scale = min(0.95, scale * 1.18)
-            cx = w * 0.5 + (it % 5 - 2) * step * 0.5
-            cy = h * 0.5 + ((it // 5) % 5 - 2) * step * 0.5
+        # Steer: try grow + 4 shifts; pick max bright blob count
+        candidates = [
+            (cx, cy, min(0.95, scale * 1.15)),
+            (cx + step, cy, scale),
+            (cx - step, cy, scale),
+            (cx, cy + step, scale),
+            (cx, cy - step, scale),
+            (cx + step, cy + step, scale),
+            (cx - step, cy - step, scale),
+        ]
+        if count > 0:
+            # Also try moving toward / away from bright centroid
+            dots = detect_dots(frame, expected=4)
+            if dots is not None and len(dots) > 0:
+                fh, fw = frame.shape[:2]
+                cam_c = dots.mean(axis=0)
+                ox = (cam_c[0] - fw / 2) / (fw / 2)
+                oy = (cam_c[1] - fh / 2) / (fh / 2)
+                candidates.extend(
+                    [
+                        (cx + ox * step * 2, cy + oy * step * 2, scale),
+                        (cx - ox * step * 2, cy - oy * step * 2, scale),
+                    ]
+                )
 
-    # Exhausted
+        ranked = []
+        for ncx, ncy, nsc in candidates:
+            ncx, ncy, nsc = _clamp_quad_center(projector_size, ncx, ncy, nsc)
+            npts = projector_quad(projector_size, ncx, ncy, nsc)
+            nframe = show_and_grab(npts, f"probe blobs")
+            ncount = _count_bright_blobs(nframe)
+            ranked.append((ncount, nsc, ncx, ncy))
+        ranked.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        ncount, nsc, ncx, ncy = ranked[0]
+        print(f"  → best probe bright_blobs≈{ncount} scale={nsc:.2f}")
+        cx, cy, scale = ncx, ncy, nsc
+        if ncount > best_count:
+            best_count = ncount
+            best_state = (cx, cy, scale)
+
+    # Last attempt at best state with sequential
     cx, cy, scale = best_state
     pts = projector_quad(projector_size, cx, cy, scale)
-    if best_count == 4 and best_frame is not None:
-        return pts, np.array(best_partial, dtype=np.float64), best_frame
-    return None
+    print(f"fallback sequential at scale={scale:.2f}")
+    cam = capture_corners_sequential(projector_size, pts, show_frame)
+    if cam is None:
+        return None
+    frame = show_and_grab(pts, "fallback locked")
+    return pts, cam, frame
 
 
 def detect_chessboard_outer_corners(frame_bgr: np.ndarray) -> np.ndarray | None:
@@ -445,20 +519,17 @@ class Calibrator:
         if board_cam is not None:
             board_cam = order_quad_tl_tr_br_bl(board_cam)
             H_table_to_camera = estimate_homography(table, board_cam)
+            H_table_to_projector = H_cam_to_proj @ H_table_to_camera if H_table_to_camera is not None else None
+            msg = "ok: colours + chessboard"
         else:
-            w, h = self.camera_size
-            side = min(w, h) * 0.35
-            x0 = (w - side) / 2
-            y0 = (h - side) / 2
-            board_cam = np.array(
-                [[x0, y0], [x0 + side, y0], [x0 + side, y0 + side], [x0, y0 + side]],
-                dtype=np.float64,
-            )
+            # No chessboard: treat colour quad as the board (grid will sit on the dots, not the pieces).
+            board_cam = color_cam
             H_table_to_camera = estimate_homography(table, board_cam)
+            H_table_to_projector = estimate_homography(table, proj_pts)
+            msg = "ok: colours only — verify grid aligns to colour rectangle (clear board for chessboard fit)"
 
-        if H_table_to_camera is None:
+        if H_table_to_camera is None or H_table_to_projector is None:
             return None
-        H_table_to_projector = H_cam_to_proj @ H_table_to_camera
         cal = CalibrationData(
             H_table_to_camera=H_table_to_camera,
             H_table_to_projector=H_table_to_projector,
@@ -467,23 +538,21 @@ class Calibrator:
             projector_size=self.projector_size,
             camera_size=self.camera_size,
         )
-        msg = "ok: colours + chessboard" if used_board else "ok: colours only (no chessboard — board pose approximate)"
         return AutoCalibrateResult(
             calibration=cal,
-            camera_debug_bgr=annotate_camera_debug(camera_frame_bgr, color_cam, board_cam if used_board else None),
+            camera_debug_bgr=annotate_camera_debug(camera_frame_bgr, color_cam, board_cam if used_board else color_cam),
             verify_projector_bgr=render_verify_overlay(self.projector_size, cal, self.layout),
             used_chessboard=used_board,
             message=msg,
         )
 
-    def auto_calibrate_with_search(self, show_and_grab) -> AutoCalibrateResult | None:
-        """Search projector quad until 4 colours visible, then solve."""
-        found = search_visible_color_quad(self.projector_size, show_and_grab)
+    def auto_calibrate_with_search(self, show_and_grab, show_frame) -> AutoCalibrateResult | None:
+        """Search until bright dots on table, sequential colour capture, then solve."""
+        found = search_visible_color_quad(self.projector_size, show_and_grab, show_frame)
         if found is None:
             return None
         proj_pts, color_cam, frame = found
         return self.auto_calibrate(frame, proj_pts=proj_pts, color_cam=color_cam)
-
     def solve_from_correspondences(
         self,
         projector_pts: np.ndarray,
