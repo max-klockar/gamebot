@@ -58,22 +58,22 @@ COLOR_CORNERS: list[tuple[str, tuple[int, int, int], list[tuple[tuple[int, int, 
     (
         "TL",
         (0, 0, 255),  # red
-        [((0, 120, 80), (10, 255, 255)), ((170, 120, 80), (180, 255, 255))],
+        [((0, 80, 60), (12, 255, 255)), ((168, 80, 60), (180, 255, 255))],
     ),
     (
         "TR",
-        (255, 80, 0),  # blue-ish
-        [((100, 120, 80), (130, 255, 255))],
+        (255, 60, 0),  # blue
+        [((95, 80, 60), (135, 255, 255))],
     ),
     (
         "BR",
         (0, 255, 255),  # yellow
-        [((20, 100, 100), (40, 255, 255))],
+        [((18, 80, 60), (42, 255, 255))],
     ),
     (
         "BL",
         (0, 255, 0),  # green
-        [((40, 80, 80), (85, 255, 255))],
+        [((40, 60, 60), (90, 255, 255))],
     ),
 ]
 
@@ -97,25 +97,49 @@ def make_grid_pattern(
     return img, np.array(points, dtype=np.float64)
 
 
-def default_projector_quad(size: tuple[int, int]) -> np.ndarray:
-    """Fixed projector-space rectangle used as coloured calibration dots (TL,TR,BR,BL)."""
+def projector_quad(
+    size: tuple[int, int],
+    cx: float | None = None,
+    cy: float | None = None,
+    scale: float = 0.32,
+) -> np.ndarray:
+    """Axis-aligned TL,TR,BR,BL quad. scale=1 spans nearly full frame; start small/centered."""
     w, h = size
-    x0, x1 = w * 0.20, w * 0.80
-    y0, y1 = h * 0.16, h * 0.84
-    return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64)
+    cx = w * 0.5 if cx is None else cx
+    cy = h * 0.5 if cy is None else cy
+    # Half-width/height of the quad in pixels
+    hw = w * 0.45 * scale
+    hh = h * 0.45 * scale
+    hw = min(hw, cx - 20, w - 20 - cx)
+    hh = min(hh, cy - 20, h - 20 - cy)
+    hw = max(hw, 40)
+    hh = max(hh, 40)
+    return np.array(
+        [[cx - hw, cy - hh], [cx + hw, cy - hh], [cx + hw, cy + hh], [cx - hw, cy + hh]],
+        dtype=np.float64,
+    )
 
 
-def render_color_corner_pattern(size: tuple[int, int], points: np.ndarray | None = None) -> np.ndarray:
+def default_projector_quad(size: tuple[int, int]) -> np.ndarray:
+    """Tighter centered default — full-bleed often misses a downward table."""
+    return projector_quad(size, scale=0.32)
+
+
+def render_color_corner_pattern(
+    size: tuple[int, int],
+    points: np.ndarray | None = None,
+    status: str = "auto calibrate",
+) -> np.ndarray:
     """Black frame + 4 saturated coloured dots (and labels)."""
     w, h = size
     pts = default_projector_quad(size) if points is None else points
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     for i, ((label, bgr, _), (x, y)) in enumerate(zip(COLOR_CORNERS, pts)):
         pt = (int(x), int(y))
-        cv2.circle(frame, pt, 28, bgr, -1)
-        cv2.circle(frame, pt, 32, (255, 255, 255), 2)
-        cv2.putText(frame, label, (pt[0] + 36, pt[1] + 8), cv2.FONT_HERSHEY_SIMPLEX, 1.0, bgr, 2)
-    cv2.putText(frame, "auto calibrate", (40, 48), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (220, 220, 220), 2)
+        cv2.circle(frame, pt, 34, bgr, -1)
+        cv2.circle(frame, pt, 38, (255, 255, 255), 2)
+        cv2.putText(frame, label, (pt[0] + 40, pt[1] + 8), cv2.FONT_HERSHEY_SIMPLEX, 1.0, bgr, 2)
+    cv2.putText(frame, status, (40, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (220, 220, 220), 2)
     return frame
 
 
@@ -154,20 +178,142 @@ def _largest_blob_center(mask: np.ndarray) -> tuple[float, float] | None:
     return best
 
 
-def detect_color_corners(frame_bgr: np.ndarray) -> np.ndarray | None:
-    """Return 4x2 camera points in TL,TR,BR,BL colour order, or None if any colour missing."""
+def detect_color_corners_partial(
+    frame_bgr: np.ndarray,
+) -> list[tuple[float, float] | None]:
+    """Per-colour camera centers (TL,TR,BR,BL); None if that colour not found."""
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-    pts = []
+    out: list[tuple[float, float] | None] = []
     for _label, _bgr, ranges in COLOR_CORNERS:
         mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
         for lo, hi in ranges:
             mask = cv2.bitwise_or(mask, cv2.inRange(hsv, np.array(lo), np.array(hi)))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-        center = _largest_blob_center(mask)
-        if center is None:
-            return None
-        pts.append(center)
-    return np.array(pts, dtype=np.float64)
+        out.append(_largest_blob_center(mask))
+    return out
+
+
+def detect_color_corners(frame_bgr: np.ndarray) -> np.ndarray | None:
+    """Return 4x2 camera points in TL,TR,BR,BL colour order, or None if any colour missing."""
+    partial = detect_color_corners_partial(frame_bgr)
+    if any(p is None for p in partial):
+        return None
+    return np.array(partial, dtype=np.float64)
+
+
+def _clamp_quad_center(size: tuple[int, int], cx: float, cy: float, scale: float) -> tuple[float, float, float]:
+    w, h = size
+    scale = float(np.clip(scale, 0.18, 0.95))
+    hw = w * 0.45 * scale
+    hh = h * 0.45 * scale
+    cx = float(np.clip(cx, 20 + hw, w - 20 - hw))
+    cy = float(np.clip(cy, 20 + hh, h - 20 - hh))
+    return cx, cy, scale
+
+
+def search_visible_color_quad(
+    projector_size: tuple[int, int],
+    show_and_grab,
+    max_iters: int = 36,
+    settle_frames: int = 4,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Hill-climb projector quad until all 4 colours are visible in the camera.
+
+    ``show_and_grab(points, status) -> frame_bgr`` projects the pattern and returns a camera frame.
+
+    Starts tight/centered. If only some dots are seen, shifts the quad toward the
+    centroid of visible dots (in camera space → mirrored into projector nudges by trying
+    neighbors) and grows scale once we have a foothold.
+    """
+    w, h = projector_size
+    cx, cy, scale = w * 0.5, h * 0.5, 0.28
+    best_count = -1
+    best_state = (cx, cy, scale)
+    best_frame = None
+    best_partial: list[tuple[float, float] | None] = [None, None, None, None]
+
+    step = min(w, h) * 0.04
+
+    for it in range(max_iters):
+        cx, cy, scale = _clamp_quad_center(projector_size, cx, cy, scale)
+        pts = projector_quad(projector_size, cx, cy, scale)
+        status = f"search {it + 1}/{max_iters}  scale={scale:.2f}  seen=? "
+        frame = None
+        partial = [None, None, None, None]
+        for _ in range(max(1, settle_frames)):
+            frame = show_and_grab(pts, status)
+            partial = detect_color_corners_partial(frame)
+        assert frame is not None
+        count = sum(1 for p in partial if p is not None)
+        status = f"search {it + 1}/{max_iters}  scale={scale:.2f}  seen={count}/4"
+        # one more show with updated caption
+        frame = show_and_grab(pts, status)
+        partial = detect_color_corners_partial(frame)
+        count = sum(1 for p in partial if p is not None)
+        print(status)
+
+        if count > best_count:
+            best_count = count
+            best_state = (cx, cy, scale)
+            best_frame = frame
+            best_partial = partial
+
+        if count == 4:
+            cam = np.array(partial, dtype=np.float64)
+            return pts, cam, frame
+
+        visible = [p for p in partial if p is not None]
+        if visible:
+            # Camera centroid of what we see vs frame center → shift projector the other way
+            # is unknown under flip; try both shift directions + grow.
+            vis = np.array(visible, dtype=np.float64)
+            cam_c = vis.mean(axis=0)
+            fh, fw = frame.shape[:2]
+            # Normalized offset of visible cluster from camera centre
+            ox = (cam_c[0] - fw / 2) / (fw / 2)
+            oy = (cam_c[1] - fh / 2) / (fh / 2)
+            # Candidate moves: toward cluster and opposite (flip-safe), plus grow
+            candidates = [
+                (cx + ox * step * 2, cy + oy * step * 2, scale),
+                (cx - ox * step * 2, cy - oy * step * 2, scale),
+                (cx, cy, min(0.95, scale * 1.12)),
+                (cx + step, cy, scale),
+                (cx - step, cy, scale),
+                (cx, cy + step, scale),
+                (cx, cy - step, scale),
+            ]
+            # Evaluate candidates quickly (1 settle frame each), pick max count then max area proxy
+            ranked = []
+            for ncx, ncy, nsc in candidates:
+                ncx, ncy, nsc = _clamp_quad_center(projector_size, ncx, ncy, nsc)
+                npts = projector_quad(projector_size, ncx, ncy, nsc)
+                nframe = show_and_grab(npts, f"probe seen={count}/4")
+                npartial = detect_color_corners_partial(nframe)
+                ncount = sum(1 for p in npartial if p is not None)
+                ranked.append((ncount, nsc, ncx, ncy, npts, nframe, npartial))
+            ranked.sort(key=lambda t: (t[0], t[1]), reverse=True)
+            ncount, nsc, ncx, ncy, npts, nframe, npartial = ranked[0]
+            cx, cy, scale = ncx, ncy, nsc
+            if ncount == 4:
+                print(f"search locked at scale={scale:.2f}")
+                return npts, np.array(npartial, dtype=np.float64), nframe
+            if ncount >= best_count:
+                best_count = ncount
+                best_state = (cx, cy, scale)
+                best_frame = nframe
+                best_partial = npartial
+        else:
+            # See nothing: grow and jitter around center
+            scale = min(0.95, scale * 1.18)
+            cx = w * 0.5 + (it % 5 - 2) * step * 0.5
+            cy = h * 0.5 + ((it // 5) % 5 - 2) * step * 0.5
+
+    # Exhausted
+    cx, cy, scale = best_state
+    pts = projector_quad(projector_size, cx, cy, scale)
+    if best_count == 4 and best_frame is not None:
+        return pts, np.array(best_partial, dtype=np.float64), best_frame
+    return None
 
 
 def detect_chessboard_outer_corners(frame_bgr: np.ndarray) -> np.ndarray | None:
@@ -273,10 +419,17 @@ class Calibrator:
         pts = default_projector_quad(self.projector_size)
         return render_color_corner_pattern(self.projector_size, pts), pts
 
-    def auto_calibrate(self, camera_frame_bgr: np.ndarray) -> AutoCalibrateResult | None:
+    def auto_calibrate(
+        self,
+        camera_frame_bgr: np.ndarray,
+        proj_pts: np.ndarray | None = None,
+        color_cam: np.ndarray | None = None,
+    ) -> AutoCalibrateResult | None:
         """Solve from coloured projector dots (+ chessboard outer quad when visible)."""
-        proj_pts = default_projector_quad(self.projector_size)
-        color_cam = detect_color_corners(camera_frame_bgr)
+        if proj_pts is None:
+            proj_pts = default_projector_quad(self.projector_size)
+        if color_cam is None:
+            color_cam = detect_color_corners(camera_frame_bgr)
         board_cam = detect_chessboard_outer_corners(camera_frame_bgr)
         used_board = board_cam is not None
 
@@ -293,8 +446,6 @@ class Calibrator:
             board_cam = order_quad_tl_tr_br_bl(board_cam)
             H_table_to_camera = estimate_homography(table, board_cam)
         else:
-            # No board find: invent board as the quad of coloured dots warped… use dots as proxy
-            # only if they roughly form the board (weak). Prefer centered fallback.
             w, h = self.camera_size
             side = min(w, h) * 0.35
             x0 = (w - side) / 2
@@ -324,6 +475,14 @@ class Calibrator:
             used_chessboard=used_board,
             message=msg,
         )
+
+    def auto_calibrate_with_search(self, show_and_grab) -> AutoCalibrateResult | None:
+        """Search projector quad until 4 colours visible, then solve."""
+        found = search_visible_color_quad(self.projector_size, show_and_grab)
+        if found is None:
+            return None
+        proj_pts, color_cam, frame = found
+        return self.auto_calibrate(frame, proj_pts=proj_pts, color_cam=color_cam)
 
     def solve_from_correspondences(
         self,

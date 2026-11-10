@@ -86,12 +86,14 @@ class App:
             scene = self._build_scene()
 
             if self.phase == HostPhase.CALIBRATE:
-                pattern, _ = self.calibrator.color_pattern()
-                proj = pattern
+                # Run search once when entering calibrate (blocks briefly inside).
+                if self._cal_frames == 0:
+                    self._run_auto_calibration()
                 self._cal_frames += 1
-                # Settle a moment, then solve once.
-                if self._cal_frames == 12:
-                    self._run_auto_calibration(frame)
+                proj = self._verify_frame
+                if proj is None:
+                    pattern, _ = self.calibrator.color_pattern()
+                    proj = pattern
             elif self.phase == HostPhase.VERIFY:
                 assert self.calibration is not None
                 proj = self._verify_frame or render_verify_overlay(
@@ -139,8 +141,23 @@ class App:
                     self.session = None
                     self.phase = HostPhase.IDENTIFY
 
-    def _run_auto_calibration(self, frame: np.ndarray) -> None:
-        result = self.calibrator.auto_calibrate(frame)
+    def _run_auto_calibration(self) -> None:
+        from gamebot.calibration import render_color_corner_pattern
+
+        size = self.config.projector_size
+
+        def show_and_grab(points: np.ndarray, status: str) -> np.ndarray:
+            pattern = render_color_corner_pattern(size, points, status=status)
+            for _ in range(2):
+                self.projector.show(pattern)
+                self.projector.poll_key(20)
+                self.camera.read()
+            self.projector.show(pattern)
+            self.projector.poll_key(20)
+            return self.camera.read()
+
+        print("auto calibrate: searching colour corners…")
+        result = self.calibrator.auto_calibrate_with_search(show_and_grab)
         if result is None:
             print("auto calibrate failed — keeping previous / mock calibration")
             if self.calibration is None:

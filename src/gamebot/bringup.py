@@ -81,7 +81,9 @@ def run_led_demo(seconds: float, led_count: int, loop: bool) -> None:
 
 
 def run_auto_calibrate(camera: str, projector: str, out_jpg: Path, settle_s: float = 1.0) -> int:
-    """Project coloured corners, solve, show verify grid, write camera debug JPG."""
+    """Search coloured corners onto the table, solve, verify grid, write debug JPG."""
+    from gamebot.calibration import render_color_corner_pattern
+
     size = (1280, 720)
     layout = TableLayout()
     calibrator = Calibrator(layout, size, size)
@@ -89,17 +91,23 @@ def run_auto_calibrate(camera: str, projector: str, out_jpg: Path, settle_s: flo
     proj = create_projector(projector, size)
     cam.open()
     proj.open()
-    pattern, _ = calibrator.color_pattern()
-    print("projecting colour corners…")
-    t_end = time.time() + settle_s
-    while time.time() < t_end:
+
+    def show_and_grab(points: np.ndarray, status: str) -> np.ndarray:
+        pattern = render_color_corner_pattern(size, points, status=status)
+        for _ in range(2):
+            proj.show(pattern)
+            proj.poll_key(20)
+            cam.read()
         proj.show(pattern)
-        proj.poll_key(30)
-        cam.read()
-    frame = cam.read()
-    result = calibrator.auto_calibrate(frame)
+        proj.poll_key(20)
+        return cam.read()
+
+    print("searching for colour corners (start tight/center, then steer)…")
+    result = calibrator.auto_calibrate_with_search(show_and_grab)
     if result is None:
-        print("FAILED: could not see all 4 coloured dots (red/blue/yellow/green)")
+        # Last frame dump
+        frame = cam.read()
+        print("FAILED: could not get all 4 coloured dots onto the visible table")
         cv2.imwrite(str(out_jpg), frame)
         print(f"wrote raw camera frame → {out_jpg}")
         proj.close()
