@@ -17,9 +17,10 @@ from gamebot.adapters.led import LedMode, LedRing, MockLedBackend, ThermalSensor
 from gamebot.calibration import (
     Calibrator,
     CalibrationData,
-    CornerCalibration,
+    detect_color_corners,
     make_grid_pattern,
     order_quad_tl_tr_br_bl,
+    render_color_corner_pattern,
 )
 from gamebot.config import AppConfig
 from gamebot.geometry import TableLayout
@@ -128,15 +129,13 @@ def test_hypothesize_and_calibration(tmp_path: Path) -> None:
     ordered = order_quad_tl_tr_br_bl(messy)
     assert ordered[0].tolist() == [10.0, 10.0]
     assert ordered[2].tolist() == [200.0, 200.0]
-    corners = CornerCalibration((1280, 720))
-    corners.nudge(50, 0)
-    cam = corners.points.copy()
-    cam[:, 0] *= 0.9
-    cam[:, 1] *= 0.9
-    cal4 = Calibrator(TableLayout(), (1280, 720), (1280, 720)).solve_from_board_corners(
-        corners.points, cam
-    )
-    assert cal4 is not None
+    # Synthetic camera view of the colour pattern should detect 4 blobs.
+    pattern = render_color_corner_pattern((640, 360))
+    found = detect_color_corners(pattern)
+    assert found is not None and len(found) == 4
+    cal = Calibrator(TableLayout(), (640, 360), (640, 360)).auto_calibrate(pattern)
+    assert cal is not None
+
 
 
 def test_led_modes() -> None:

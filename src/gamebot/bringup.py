@@ -4,13 +4,14 @@
 Usage on Pi:
   python -m gamebot.bringup --camera picam --projector hdmi --led
   python -m gamebot.bringup --led-demo              # headless: cycle blue / purple / red
-  python -m gamebot.bringup --led-demo --seconds 30
+  python -m gamebot.bringup --calibrate             # auto colour-corner cal + save verify jpg
 """
 
 from __future__ import annotations
 
 import argparse
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -22,7 +23,8 @@ from gamebot.adapters.led import (
     Ws2812Backend,
     create_led_backend,
 )
-from gamebot.calibration import make_grid_pattern
+from gamebot.calibration import Calibrator, make_grid_pattern
+from gamebot.geometry import TableLayout
 
 
 def _draw_led_swatch(frame: np.ndarray, led: LedRing, label: str) -> None:
@@ -78,13 +80,59 @@ def run_led_demo(seconds: float, led_count: int, loop: bool) -> None:
         led.close()
 
 
+def run_auto_calibrate(camera: str, projector: str, out_jpg: Path, settle_s: float = 1.0) -> int:
+    """Project coloured corners, solve, show verify grid, write camera debug JPG."""
+    size = (1280, 720)
+    layout = TableLayout()
+    calibrator = Calibrator(layout, size, size)
+    cam = create_camera(camera, size)
+    proj = create_projector(projector, size)
+    cam.open()
+    proj.open()
+    pattern, _ = calibrator.color_pattern()
+    print("projecting colour corners…")
+    t_end = time.time() + settle_s
+    while time.time() < t_end:
+        proj.show(pattern)
+        proj.poll_key(30)
+        cam.read()
+    frame = cam.read()
+    result = calibrator.auto_calibrate(frame)
+    if result is None:
+        print("FAILED: could not see all 4 coloured dots (red/blue/yellow/green)")
+        cv2.imwrite(str(out_jpg), frame)
+        print(f"wrote raw camera frame → {out_jpg}")
+        proj.close()
+        cam.close()
+        return 1
+    out_jpg = Path(out_jpg)
+    out_jpg.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out_jpg), result.camera_debug_bgr)
+    cal_path = out_jpg.with_suffix(".json")
+    result.calibration.save(cal_path)
+    print(result.message)
+    print(f"wrote {out_jpg}")
+    print(f"wrote {cal_path}")
+    print("showing green verify grid on projector for 8s — check table alignment")
+    t_end = time.time() + 8.0
+    while time.time() < t_end:
+        proj.show(result.verify_projector_bgr)
+        if proj.poll_key(30) in (ord("q"), 27):
+            break
+    proj.close()
+    cam.close()
+    return 0
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Schack hardware bring-up smoke test")
     p.add_argument("--camera", choices=["mock", "picam", "file"], default="mock")
     p.add_argument("--projector", choices=["mock", "hdmi"], default="mock")
     p.add_argument("--led", action="store_true", help="Enable LED ring hardware backend")
     p.add_argument("--led-demo", action="store_true", help="Cycle blue / purple / red LED modes (headless OK)")
-    p.add_argument("--led-count", type=int, default=16, help="WS2812 LED count (default 16)")
+    p.add_argument("--calibrate", action="store_true", help="Auto colour-corner calibration + verify image")
+    p.add_argument("--out", type=Path, default=Path.home() / "cal_verify.jpg", help="Debug JPG path")
+    p.add_argument("--led-count", type=int, default=90, help="WS2812 LED count (default 90)")
     p.add_argument("--loop", action="store_true", help="With --led-demo, repeat until Ctrl+C")
     p.add_argument("--seconds", type=float, default=9.0, help="Total demo length (split across 3 colors)")
     args = p.parse_args()
@@ -92,6 +140,9 @@ def main() -> None:
     if args.led_demo:
         run_led_demo(args.seconds, args.led_count, args.loop)
         return
+
+    if args.calibrate:
+        raise SystemExit(run_auto_calibrate(args.camera, args.projector, args.out))
 
     cam = create_camera(args.camera, (1280, 720))
     proj = create_projector(args.projector, (1280, 720))
