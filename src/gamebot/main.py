@@ -9,7 +9,7 @@ import numpy as np
 
 from gamebot.adapters import create_camera, create_projector
 from gamebot.adapters.camera import MockCamera
-from gamebot.adapters.led import LedRing, create_led_backend
+from gamebot.adapters.led import LedMode, LedRing, create_led_backend
 from gamebot.audio import AmbientPlayer
 from gamebot.calibration import Calibrator, CalibrationData, render_verify_overlay
 from gamebot.config import AppConfig
@@ -133,15 +133,30 @@ class App:
             if self.phase == HostPhase.SPLASH:
                 splash_frames += 1
                 if splash_frames > 15:
-                    self.phase = HostPhase.CALIBRATE
-                    self._cal_frames = 0
                     splash_frames = 0
+                    self.led.set_mode(LedMode.IDLE)
+                    if self.config.quick_start_elo is not None:
+                        chess = next((p for p in self.plugins if p.id == "chess"), None)
+                        if chess is None:
+                            print("quick start: chess plugin missing")
+                            self.phase = HostPhase.IDENTIFY
+                        else:
+                            self._start_plugin(chess)
+                    elif self.config.skip_calibrate:
+                        self.phase = HostPhase.IDENTIFY
+                    else:
+                        self.phase = HostPhase.CALIBRATE
+                        self._cal_frames = 0
             elif self.phase == HostPhase.IDENTIFY:
+                self.led.set_mode(LedMode.IDLE)
                 self._run_identify(frame)
+            elif self.phase == HostPhase.CHOOSE:
+                self.led.set_mode(LedMode.IDLE)
             elif self.phase == HostPhase.PLAYING and self.session is not None:
                 self.session.tick(frame)
                 if self.session.wants_exit():
                     self.ambient.stop()
+                    self.led.set_mode(LedMode.IDLE)
                     self.session = None
                     self.phase = HostPhase.IDENTIFY
 
@@ -316,6 +331,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--data-dir", type=Path, default=None)
     p.add_argument("--engine", type=str, default=None, help="Path to stockfish (chess plugin)")
     p.add_argument("--no-debug", action="store_true")
+    p.add_argument(
+        "--elo",
+        type=int,
+        default=None,
+        help="Skip menus/calibrate; start chess as Guest at roughly this strength (e.g. 500)",
+    )
+    p.add_argument(
+        "--skip-cal",
+        action="store_true",
+        help="Use saved calibration; skip auto-cal on launch",
+    )
+    p.add_argument(
+        "--led",
+        choices=["auto", "mock", "ws2812", "rgb_pwm"],
+        default=None,
+        help="LED backend (default auto)",
+    )
     return p
 
 
@@ -331,7 +363,11 @@ def main(argv: list[str] | None = None) -> None:
         camera_file=args.camera_file,
         engine_path=args.engine,
         debug_overlay=not args.no_debug,
+        skip_calibrate=bool(args.skip_cal or args.elo is not None),
+        quick_start_elo=args.elo,
     )
+    if args.led is not None:
+        kwargs["led_backend"] = args.led
     if args.data_dir is not None:
         cfg = AppConfig(data_dir=args.data_dir, **kwargs)
     else:

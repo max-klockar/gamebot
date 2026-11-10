@@ -29,6 +29,8 @@ class AppConfig:
     identity_homography: bool = True
     led_backend: str = "auto"  # auto | mock | rgb_pwm | ws2812
     hot_celsius: float = 75.0
+    skip_calibrate: bool = False
+    quick_start_elo: int | None = None
 
     def __post_init__(self) -> None:
         self.data_dir = Path(self.data_dir)

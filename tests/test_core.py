@@ -76,6 +76,10 @@ def test_chooser_when_zero_or_many() -> None:
 def test_skill_mapping() -> None:
     assert skill_to_stockfish(1)[0] == 0
     assert skill_to_stockfish(10)[0] == 20
+    from chess_plugin.game import elo_to_skill, SkillBand
+
+    band, level = elo_to_skill(500)
+    assert band == SkillBand.BEGINNER and level == 1
 
 
 def test_profiles_and_game(db: Database) -> None:

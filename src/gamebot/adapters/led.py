@@ -30,7 +30,7 @@ class LedMode(str, Enum):
 
 # (base RGB 0-255, pulse amplitude 0-1, period seconds)
 _MODE_STYLE: dict[LedMode, tuple[tuple[int, int, int], float, float]] = {
-    LedMode.IDLE: ((28, 55, 140), 0.22, 3.2),       # vague blue, slow
+    LedMode.IDLE: ((50, 100, 220), 0.28, 3.2),       # soft blue breathe (menus + play)
     LedMode.THINKING: ((150, 20, 200), 0.55, 0.75),  # purple
     LedMode.OVERHEAT: ((255, 0, 0), 1.0, 0.12),      # violent red
 }
@@ -141,7 +141,7 @@ class RgbPwmBackend(LedBackend):
 class Ws2812Backend(LedBackend):
     """Addressable LED ring (NeoPixel) via rpi_ws281x."""
 
-    def __init__(self, count: int = 16, pin_bcm: int = 18, brightness: int = 80) -> None:
+    def __init__(self, count: int = 90, pin_bcm: int = 18, brightness: int = 80) -> None:
         self.count = count
         self.pin_bcm = pin_bcm
         self.brightness = brightness
@@ -213,7 +213,9 @@ class LedRing:
             return
         try:
             self.backend.open()
-        except Exception:
+            print(f"LED: {type(self.backend).__name__}")
+        except Exception as exc:
+            print(f"LED hardware failed ({exc}) — using mock (ring will stay dark)")
             self.backend = MockLedBackend()
             self.backend.open()
         self._stop.clear()
