@@ -607,8 +607,92 @@ def render_verify_overlay(size: tuple[int, int], cal: CalibrationData, layout: T
         b = warp_points(np.array([[ox, oy + i * s / 8], [ox + s, oy + i * s / 8]]), cal.H_table_to_projector)
         cv2.line(frame, tuple(a[0].astype(int)), tuple(a[1].astype(int)), (0, 200, 0), 2)
         cv2.line(frame, tuple(b[0].astype(int)), tuple(b[1].astype(int)), (0, 200, 0), 2)
-    cv2.putText(frame, "VERIFY: grid should match board", (40, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+    # Bright crosses on the four corner squares — easy to spot residual skew.
+    sq = layout.square_mm
+    corner_sq = np.array(
+        [
+            [ox + 0.5 * sq, oy + 0.5 * sq],
+            [ox + 7.5 * sq, oy + 0.5 * sq],
+            [ox + 7.5 * sq, oy + 7.5 * sq],
+            [ox + 0.5 * sq, oy + 7.5 * sq],
+        ],
+        dtype=np.float64,
+    )
+    for p in warp_points(corner_sq, cal.H_table_to_projector):
+        x, y = int(p[0]), int(p[1])
+        cv2.drawMarker(frame, (x, y), (0, 255, 255), markerType=cv2.MARKER_CROSS, markerSize=36, thickness=3)
+    cv2.putText(frame, "VERIFY: grid + corner crosses on board", (40, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
     return frame
+
+
+def refine_with_board_corner_projections(
+    projector_size: tuple[int, int],
+    layout: TableLayout,
+    cal: CalibrationData,
+    board_cam: np.ndarray,
+    show_frame,
+    settle: int = 3,
+) -> CalibrationData | None:
+    """Project dots onto estimated board corners, measure lit−dark, re-solve projector map.
+
+    Fixes residual skew when colour-dot H_cam_to_proj was slightly off (wide lens / angle).
+    """
+    table = layout.board_corners()
+    # Sit dots on corner squares, not the outer rim.
+    inset = 0.06
+    t_center = table.mean(axis=0)
+    table_inset = table + (t_center - table) * inset
+    b_center = board_cam.mean(axis=0)
+    board_inset = board_cam + (b_center - board_cam) * inset
+    proj_pts = warp_points(table_inset, cal.H_table_to_projector)
+
+    w, h = projector_size
+    black = np.zeros((h, w, 3), dtype=np.uint8)
+    cam_seen: list[tuple[float, float]] = []
+    print("refine: projecting corner-square dots…")
+    for i, ((label, bgr, _), (px, py)) in enumerate(zip(COLOR_CORNERS, proj_pts)):
+        dark = None
+        for _ in range(settle):
+            dark = show_frame(black)
+        assert dark is not None
+        img = render_single_color_dot(
+            projector_size, (float(px), float(py)), bgr, label, status=f"refine {label} ({i + 1}/4)"
+        )
+        lit = None
+        for _ in range(settle):
+            lit = show_frame(img)
+        assert lit is not None
+        pt = detect_dot_by_difference(dark, lit)
+        if pt is None:
+            print(f"refine missed {label}")
+            return None
+        err = float(np.linalg.norm(np.array(pt) - board_inset[i]))
+        print(
+            f"refine {label}: cam_seen=({pt[0]:.0f},{pt[1]:.0f}) "
+            f"board=({board_inset[i, 0]:.0f},{board_inset[i, 1]:.0f}) err≈{err:.0f}px"
+        )
+        cam_seen.append(pt)
+    cam_seen_arr = np.array(cam_seen, dtype=np.float64)
+    H_cam_to_proj = estimate_homography(cam_seen_arr, proj_pts)
+    if H_cam_to_proj is None:
+        return None
+    # Where to draw so light lands on true board corners:
+    proj_for_board = warp_points(board_cam, H_cam_to_proj)
+    if not quad_looks_sane(proj_for_board, projector_size, min_area=5000.0, min_edge=40.0):
+        print("refine: projector quad not sane")
+        return None
+    H_table_to_projector = estimate_homography(table, proj_for_board)
+    H_table_to_camera = estimate_homography(table, board_cam)
+    if H_table_to_projector is None or H_table_to_camera is None:
+        return None
+    return CalibrationData(
+        H_table_to_camera=H_table_to_camera,
+        H_table_to_projector=H_table_to_projector,
+        H_camera_to_projector=H_cam_to_proj,
+        board_corners_camera=board_cam,
+        projector_size=cal.projector_size,
+        camera_size=cal.camera_size,
+    )
 
 
 def annotate_camera_debug(
@@ -723,7 +807,7 @@ class Calibrator:
         )
 
     def auto_calibrate_with_search(self, show_and_grab, show_frame) -> AutoCalibrateResult | None:
-        """Search colour dots, then black-frame full chessboard detect, then solve."""
+        """Search colour dots, full chessboard, then corner-projection refine."""
         found = search_visible_color_quad(self.projector_size, show_and_grab, show_frame)
         if found is None:
             return None
@@ -735,8 +819,30 @@ class Calibrator:
         for _ in range(5):
             board_frame = show_frame(black)
         assert board_frame is not None
-        return self.auto_calibrate(
+        result = self.auto_calibrate(
             board_frame, proj_pts=proj_pts, color_cam=color_cam, board_frame_bgr=board_frame
+        )
+        if result is None or not result.used_chessboard:
+            return result
+        refined = refine_with_board_corner_projections(
+            self.projector_size,
+            self.layout,
+            result.calibration,
+            result.calibration.board_corners_camera,
+            show_frame,
+        )
+        if refined is None:
+            print("corner refine skipped — keeping initial solve")
+            return result
+        print("corner refine applied")
+        return AutoCalibrateResult(
+            calibration=refined,
+            camera_debug_bgr=annotate_camera_debug(
+                board_frame, color_cam, refined.board_corners_camera
+            ),
+            verify_projector_bgr=render_verify_overlay(self.projector_size, refined, self.layout),
+            used_chessboard=True,
+            message=result.message + " + corner refine",
         )
     def solve_from_correspondences(
         self,
