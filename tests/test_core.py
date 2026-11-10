@@ -17,6 +17,7 @@ from gamebot.adapters.led import LedMode, LedRing, MockLedBackend, ThermalSensor
 from gamebot.calibration import (
     Calibrator,
     CalibrationData,
+    detect_chessboard_outer_corners,
     detect_color_corners,
     make_grid_pattern,
     order_quad_tl_tr_br_bl,
@@ -136,6 +137,26 @@ def test_hypothesize_and_calibration(tmp_path: Path) -> None:
     cal = Calibrator(TableLayout(), (640, 360), (640, 360)).auto_calibrate(pattern)
     assert cal is not None
 
+
+def test_chessboard_center_with_start_pieces() -> None:
+    """Empty middle ranks (start position) should still yield an outer board quad."""
+    size = 400
+    sq = size // 8
+    img = np.zeros((size, size, 3), dtype=np.uint8)
+    for r in range(8):
+        for c in range(8):
+            if (r + c) % 2 == 0:
+                img[r * sq : (r + 1) * sq, c * sq : (c + 1) * sq] = 220
+            else:
+                img[r * sq : (r + 1) * sq, c * sq : (c + 1) * sq] = 40
+    # Cover ranks 1–2 and 7–8 (top/bottom two rows) like starting pieces.
+    img[0 : 2 * sq, :] = 30
+    img[6 * sq : 8 * sq, :] = 200
+    outer = detect_chessboard_outer_corners(img)
+    assert outer is not None
+    ordered = order_quad_tl_tr_br_bl(outer)
+    assert ordered[0, 0] < 30 and ordered[0, 1] < 30
+    assert ordered[2, 0] > size - 30 and ordered[2, 1] > size - 30
 
 
 def test_led_modes() -> None:

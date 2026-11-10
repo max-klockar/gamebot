@@ -390,30 +390,93 @@ def search_visible_color_quad(
     return pts, cam, frame
 
 
-def detect_chessboard_outer_corners(frame_bgr: np.ndarray) -> np.ndarray | None:
-    """Outer board quad (TL,TR,BR,BL) from 7x7 inner chessboard corners, if visible."""
-    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-    flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
-    found, corners = cv2.findChessboardCorners(gray, (7, 7), flags)
-    if not found:
-        return None
-    corners = cv2.cornerSubPix(
+# Full empty board first; then starting-position center bands (ranks 3–6 free).
+_CHESSBOARD_PATTERNS: tuple[tuple[int, int], ...] = (
+    (7, 7),
+    (7, 3),
+    (3, 7),
+    (5, 3),
+    (3, 5),
+    (7, 5),
+    (5, 7),
+    (5, 5),
+    (3, 3),
+)
+
+
+def _refine_corners(gray: np.ndarray, corners: np.ndarray) -> np.ndarray:
+    return cv2.cornerSubPix(
         gray,
         corners,
         (5, 5),
         (-1, -1),
         (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01),
     )
-    grid = corners.reshape(7, 7, 2)
-    # Extrapolate one square beyond the inner 7x7 to approximate the outer rim.
-    def extrap(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        return a + (a - b)
 
-    tl = extrap(grid[0, 0], grid[1, 1])
-    tr = extrap(grid[0, 6], grid[1, 5])
-    br = extrap(grid[6, 6], grid[5, 5])
-    bl = extrap(grid[6, 0], grid[5, 1])
+
+def _find_chessboard_corners(gray: np.ndarray, pattern: tuple[int, int]) -> np.ndarray | None:
+    cols, rows = pattern
+    if hasattr(cv2, "findChessboardCornersSB"):
+        sb_flags = 0
+        if hasattr(cv2, "CALIB_CB_EXHAUSTIVE"):
+            sb_flags |= cv2.CALIB_CB_EXHAUSTIVE
+        if hasattr(cv2, "CALIB_CB_ACCURACY"):
+            sb_flags |= cv2.CALIB_CB_ACCURACY
+        found, corners = cv2.findChessboardCornersSB(gray, pattern, flags=sb_flags)
+        if found and corners is not None:
+            return corners.reshape(-1, 1, 2).astype(np.float32)
+    flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
+    found, corners = cv2.findChessboardCorners(gray, pattern, flags)
+    if not found or corners is None:
+        return None
+    return corners
+
+
+def _outer_from_inner_grid(grid: np.ndarray, full_inner: tuple[int, int] = (7, 7)) -> np.ndarray:
+    """Extrapolate outer board quad from a (possibly partial) inner-corner grid.
+
+    `grid` is (rows, cols, 2). Partial detections are assumed centered on the board
+    (empty middle ranks/files with pieces in starting position).
+    """
+    rows, cols = grid.shape[:2]
+    full_rows, full_cols = full_inner
+    if cols >= 2:
+        step_h = np.mean(grid[:, 1:, :] - grid[:, :-1, :], axis=(0, 1))
+    else:
+        step_h = np.array([1.0, 0.0], dtype=np.float64)
+    if rows >= 2:
+        step_v = np.mean(grid[1:, :, :] - grid[:-1, :, :], axis=(0, 1))
+    else:
+        step_v = np.array([0.0, 1.0], dtype=np.float64)
+
+    pad_top = (full_rows - rows) // 2
+    pad_left = (full_cols - cols) // 2
+    pad_bot = full_rows - rows - pad_top
+    pad_right = full_cols - cols - pad_left
+
+    tl = grid[0, 0] - (pad_top + 1) * step_v - (pad_left + 1) * step_h
+    tr = grid[0, -1] - (pad_top + 1) * step_v + (pad_right + 1) * step_h
+    br = grid[-1, -1] + (pad_bot + 1) * step_v + (pad_right + 1) * step_h
+    bl = grid[-1, 0] + (pad_bot + 1) * step_v - (pad_left + 1) * step_h
     return np.array([tl, tr, br, bl], dtype=np.float64)
+
+
+def detect_chessboard_outer_corners(frame_bgr: np.ndarray) -> np.ndarray | None:
+    """Outer board quad (TL,TR,BR,BL). Tries full 7x7, then center bands with pieces on."""
+    gray0 = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    variants = (gray0, clahe.apply(gray0), cv2.bitwise_not(gray0), cv2.bitwise_not(clahe.apply(gray0)))
+
+    for pattern in _CHESSBOARD_PATTERNS:
+        cols, rows = pattern
+        for gray in variants:
+            corners = _find_chessboard_corners(gray, pattern)
+            if corners is None:
+                continue
+            corners = _refine_corners(gray0, corners)
+            grid = corners.reshape(rows, cols, 2)
+            return _outer_from_inner_grid(grid)
+    return None
 
 
 def estimate_homography(src: np.ndarray, dst: np.ndarray) -> np.ndarray | None:
@@ -520,13 +583,13 @@ class Calibrator:
             board_cam = order_quad_tl_tr_br_bl(board_cam)
             H_table_to_camera = estimate_homography(table, board_cam)
             H_table_to_projector = H_cam_to_proj @ H_table_to_camera if H_table_to_camera is not None else None
-            msg = "ok: colours + chessboard"
+            msg = "ok: colours + chessboard (center OK with pieces in start)"
         else:
             # No chessboard: treat colour quad as the board (grid will sit on the dots, not the pieces).
             board_cam = color_cam
             H_table_to_camera = estimate_homography(table, board_cam)
             H_table_to_projector = estimate_homography(table, proj_pts)
-            msg = "ok: colours only — verify grid aligns to colour rectangle (clear board for chessboard fit)"
+            msg = "ok: colours only — verify grid on colour rectangle (board contrast too low?)"
 
         if H_table_to_camera is None or H_table_to_projector is None:
             return None
