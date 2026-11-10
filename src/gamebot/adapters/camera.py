@@ -139,7 +139,9 @@ class PicameraAdapter(CameraAdapter):
             from picamera2 import Picamera2
         except ImportError as exc:
             raise ImportError(
-                "picamera2 is required for PicameraAdapter. Install with: pip install -e '.[pi]'"
+                "picamera2/libcamera required. On the Pi: "
+                "sudo apt install -y python3-picamera2 python3-libcamera "
+                "and use a venv created with: python3 -m venv --system-site-packages .venv"
             ) from exc
         cam = Picamera2()
         config = cam.create_preview_configuration(
