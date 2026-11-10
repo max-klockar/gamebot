@@ -216,6 +216,7 @@ class LedRing:
             print(f"LED: {type(self.backend).__name__}")
         except Exception as exc:
             print(f"LED hardware failed ({exc}) — using mock (ring will stay dark)")
+            print("  WS2812 needs root DMA. Use:  ./scripts/run-pi.sh --camera picam --projector hdmi …")
             self.backend = MockLedBackend()
             self.backend.open()
         self._stop.clear()
