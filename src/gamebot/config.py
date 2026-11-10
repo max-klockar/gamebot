@@ -31,6 +31,7 @@ class AppConfig:
     hot_celsius: float = 75.0
     skip_calibrate: bool = False
     quick_start_elo: int | None = None
+    ambient_sound: bool = False
 
     def __post_init__(self) -> None:
         self.data_dir = Path(self.data_dir)

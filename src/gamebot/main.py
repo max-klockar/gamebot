@@ -51,7 +51,7 @@ class App:
         self.phase = HostPhase.SPLASH
         self.candidates: list[GamePlugin] = []
         self.session: GameSession | None = None
-        self.ambient = AmbientPlayer()
+        self.ambient = AmbientPlayer(enabled=config.ambient_sound)
         self._thermal_check_counter = 0
         self._cal_frames = 0
         self._verify_frames = 0
@@ -348,6 +348,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="LED backend (default auto)",
     )
+    p.add_argument(
+        "--ambient",
+        action="store_true",
+        help="Play looping ambient music (off by default; needs a real speaker)",
+    )
     return p
 
 
@@ -365,6 +370,7 @@ def main(argv: list[str] | None = None) -> None:
         debug_overlay=not args.no_debug,
         skip_calibrate=bool(args.skip_cal or args.elo is not None),
         quick_start_elo=args.elo,
+        ambient_sound=bool(args.ambient),
     )
     if args.led is not None:
         kwargs["led_backend"] = args.led

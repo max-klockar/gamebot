@@ -9,15 +9,22 @@ def default_ambient_path() -> Path:
 
 
 class AmbientPlayer:
-    """Loop soft background music while a game session is active (masks fan noise)."""
+    """Optional looping music. Disabled by default — Pi+sudo has no usable HDMI audio."""
 
-    def __init__(self, path: Path | None = None, volume: float = 0.4) -> None:
+    def __init__(
+        self,
+        path: Path | None = None,
+        volume: float = 0.4,
+        *,
+        enabled: bool = False,
+    ) -> None:
         self.path = path if path is not None else default_ambient_path()
         self.volume = float(volume)
+        self.enabled = enabled
         self._playing = False
 
     def start(self) -> None:
-        if self._playing:
+        if not self.enabled or self._playing:
             return
         try:
             import pygame
