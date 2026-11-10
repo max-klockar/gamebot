@@ -30,7 +30,7 @@ class LedMode(str, Enum):
 
 # (base RGB 0-255, pulse amplitude 0-1, period seconds)
 _MODE_STYLE: dict[LedMode, tuple[tuple[int, int, int], float, float]] = {
-    LedMode.IDLE: ((70, 42, 28), 0.18, 4.0),         # dim warm amber breathe (not icy)
+    LedMode.IDLE: ((18, 48, 140), 0.16, 4.0),        # dim true blue (not white/icy)
     LedMode.THINKING: ((150, 20, 200), 0.55, 0.75),  # purple
     LedMode.OVERHEAT: ((255, 0, 0), 1.0, 0.12),      # violent red
 }
@@ -141,7 +141,7 @@ class RgbPwmBackend(LedBackend):
 class Ws2812Backend(LedBackend):
     """Addressable LED ring (NeoPixel) via rpi_ws281x."""
 
-    def __init__(self, count: int = 90, pin_bcm: int = 18, brightness: int = 80) -> None:
+    def __init__(self, count: int = 90, pin_bcm: int = 18, brightness: int = 36) -> None:
         self.count = count
         self.pin_bcm = pin_bcm
         self.brightness = brightness
