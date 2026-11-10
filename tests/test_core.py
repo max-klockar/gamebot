@@ -144,6 +144,19 @@ def test_hypothesize_and_calibration(tmp_path: Path) -> None:
     assert cal is not None
 
 
+def test_virtual_table_draw_and_detect() -> None:
+    from gamebot.table_surface import detect_physical_table, draw_virtual_table
+    from gamebot.geometry import TableLayout
+
+    blank = np.full((360, 640, 3), 30, dtype=np.uint8)
+    assert detect_physical_table(blank) is False
+    layout = TableLayout()
+    H = np.array([[1.2, 0, 40], [0, 1.2, 30], [0, 0, 1]], dtype=np.float64)
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    draw_virtual_table(frame, layout, H)
+    assert frame.sum() > 0
+
+
 def test_difference_dot_ignores_static_lamp() -> None:
     dark = np.zeros((240, 320, 3), dtype=np.uint8)
     cv2.circle(dark, (40, 40), 12, (255, 255, 255), -1)  # static lamp

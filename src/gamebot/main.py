@@ -16,6 +16,7 @@ from gamebot.config import AppConfig
 from gamebot.geometry import TableLayout, warp_points
 from gamebot.plugins import IdentifyContext, RuntimeHandles, discover_plugins, identify_matches
 from gamebot.plugins.protocol import GamePlugin, GameSession
+from gamebot.table_surface import detect_physical_table
 from gamebot.ui import DwellTapTracker, Scene, UIRenderer, build_game_chooser_scene
 from gamebot.vision import TokenTapDetector
 
@@ -43,7 +44,11 @@ class App:
         self.calibrator = Calibrator(self.layout, config.projector_size, config.camera_size)
         self.calibration: CalibrationData | None = None
         self.renderer = UIRenderer(
-            config.projector_size, self.layout, config.identity_H(), debug=config.debug_overlay
+            config.projector_size,
+            self.layout,
+            config.identity_H(),
+            debug=config.debug_overlay,
+            project_virtual_table=config.virtual_table == "always",
         )
         self.dwell = DwellTapTracker(dwell_ms=config.dwell_ms)
         self.token_detector = TokenTapDetector()
@@ -56,6 +61,9 @@ class App:
         self._cal_frames = 0
         self._verify_frames = 0
         self._verify_frame: np.ndarray | None = None
+        self._table_check_counter = 0
+        self._last_virtual_table: bool | None = None
+        self._virtual_table_latched = config.virtual_table == "always"
 
     def load_or_mock_calibration(self) -> None:
         path = self.config.calibration_path
@@ -129,6 +137,10 @@ class App:
             self._thermal_check_counter += 1
             if self._thermal_check_counter % 15 == 0:
                 self.led.tick_thermal()
+
+            self._table_check_counter += 1
+            if self._table_check_counter % 45 == 0:
+                self._update_virtual_table(frame)
 
             if self.phase == HostPhase.SPLASH:
                 splash_frames += 1
@@ -305,6 +317,28 @@ class App:
         if self.phase == HostPhase.PLAYING and self.session is not None:
             self.session.handle_key(key)
 
+    def _update_virtual_table(self, frame: np.ndarray) -> None:
+        mode = (self.config.virtual_table or "auto").lower()
+        if mode == "always":
+            want = True
+        elif mode == "never":
+            want = False
+        elif self._virtual_table_latched:
+            # Stay on for the session — our projected board would otherwise look "physical".
+            want = True
+        else:
+            want = not detect_physical_table(frame)
+            if want:
+                self._virtual_table_latched = True
+        if want != self._last_virtual_table:
+            self.renderer.project_virtual_table = want
+            self._last_virtual_table = want
+            print(
+                "virtual table: ON (no physical table/board — projecting wood+board+ChArUco)"
+                if want
+                else "virtual table: OFF (physical surface detected)"
+            )
+
     def _draw_led_debug(self, frame: np.ndarray) -> None:
         if not self.config.debug_overlay:
             return
@@ -353,6 +387,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Play looping ambient music (off by default; needs a real speaker)",
     )
+    p.add_argument(
+        "--virtual-table",
+        choices=["auto", "always", "never"],
+        default="auto",
+        help="Project a wood table+board+ChArUco when no physical table is seen (default auto)",
+    )
     return p
 
 
@@ -371,6 +411,7 @@ def main(argv: list[str] | None = None) -> None:
         skip_calibrate=bool(args.skip_cal or args.elo is not None),
         quick_start_elo=args.elo,
         ambient_sound=bool(args.ambient),
+        virtual_table=args.virtual_table,
     )
     if args.led is not None:
         kwargs["led_backend"] = args.led

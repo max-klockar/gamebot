@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from gamebot.geometry import TableLayout, warp_points
+from gamebot.table_surface import draw_virtual_table
 
 
 @dataclass
@@ -133,11 +134,13 @@ class UIRenderer:
         layout: TableLayout,
         H_table_to_proj: np.ndarray,
         debug: bool = True,
+        project_virtual_table: bool = False,
     ) -> None:
         self.size = size
         self.layout = layout
         self.H = H_table_to_proj
         self.debug = debug
+        self.project_virtual_table = project_virtual_table
 
     def set_homography(self, H: np.ndarray) -> None:
         self.H = H
@@ -145,9 +148,13 @@ class UIRenderer:
     def render(self, scene: Scene, dwell_progress: float = 0.0, active_zone: str | None = None) -> np.ndarray:
         w, h = self.size
         frame = np.zeros((h, w, 3), dtype=np.uint8)
-        # Always-on board frame: if a kid nudges the board, they can slide it back into the light.
-        corners = warp_points(self.layout.board_corners(), self.H).astype(np.int32)
-        cv2.polylines(frame, [corners], True, (0, 200, 140), 4)
+        if self.project_virtual_table:
+            # No physical table detected — project wood top + board + ChArUco corner anchors.
+            draw_virtual_table(frame, self.layout, self.H, with_chessboard=True, with_charuco_anchors=True)
+        else:
+            # Always-on board frame: if a kid nudges the board, they can slide it back into the light.
+            corners = warp_points(self.layout.board_corners(), self.H).astype(np.int32)
+            cv2.polylines(frame, [corners], True, (0, 200, 140), 4)
 
         for prim in scene.prims:
             if prim.kind == "button":
