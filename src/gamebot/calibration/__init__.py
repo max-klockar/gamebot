@@ -540,14 +540,24 @@ def _outer_from_inner_grid(grid: np.ndarray, full_inner: tuple[int, int] = (7, 7
     return np.array([tl, tr, br, bl], dtype=np.float64)
 
 
-def detect_chessboard_outer_corners(frame_bgr: np.ndarray) -> np.ndarray | None:
-    """Outer board quad (TL,TR,BR,BL). Tries full 7x7, then center bands with pieces on."""
+def detect_chessboard_outer_corners(
+    frame_bgr: np.ndarray,
+    *,
+    prefer_full: bool = True,
+) -> np.ndarray | None:
+    """Outer board quad (TL,TR,BR,BL). Prefers full 7x7 (empty board), then center bands."""
     gray0 = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     h, w = gray0.shape[:2]
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     variants = (gray0, clahe.apply(gray0), cv2.bitwise_not(gray0), cv2.bitwise_not(clahe.apply(gray0)))
+    patterns = _CHESSBOARD_PATTERNS
+    if prefer_full:
+        # Empty board: try full / near-full before start-position center bands.
+        patterns = ((7, 7), (7, 5), (5, 7), (5, 5)) + tuple(
+            p for p in _CHESSBOARD_PATTERNS if p not in {(7, 7), (7, 5), (5, 7), (5, 5)}
+        )
 
-    for pattern in _CHESSBOARD_PATTERNS:
+    for pattern in patterns:
         cols, rows = pattern
         for gray in variants:
             corners = _find_chessboard_corners(gray, pattern)
@@ -559,6 +569,7 @@ def detect_chessboard_outer_corners(frame_bgr: np.ndarray) -> np.ndarray | None:
             # Partial patterns must land on a plausible board-sized quad in-frame.
             min_area = (w * h) * 0.02
             if quad_looks_sane(outer, (w, h), min_area=min_area, min_edge=min(w, h) * 0.08):
+                print(f"chessboard locked pattern={cols}x{rows} inner corners")
                 return order_quad_tl_tr_br_bl(outer)
     return None
 
@@ -645,13 +656,15 @@ class Calibrator:
         camera_frame_bgr: np.ndarray,
         proj_pts: np.ndarray | None = None,
         color_cam: np.ndarray | None = None,
+        board_frame_bgr: np.ndarray | None = None,
     ) -> AutoCalibrateResult | None:
         """Solve from coloured projector dots (+ chessboard outer quad when visible)."""
         if proj_pts is None:
             proj_pts = default_projector_quad(self.projector_size)
         if color_cam is None:
             color_cam = detect_color_corners(camera_frame_bgr)
-        board_cam = detect_chessboard_outer_corners(camera_frame_bgr)
+        board_src = board_frame_bgr if board_frame_bgr is not None else camera_frame_bgr
+        board_cam = detect_chessboard_outer_corners(board_src, prefer_full=True)
         used_board = board_cam is not None
 
         if color_cam is None:
@@ -677,7 +690,7 @@ class Calibrator:
         if board_cam is not None:
             H_table_to_camera = estimate_homography(table, board_cam)
             H_table_to_projector = H_cam_to_proj @ H_table_to_camera if H_table_to_camera is not None else None
-            msg = "ok: colours + chessboard (center OK with pieces in start)"
+            msg = "ok: colours + full chessboard"
         else:
             # No chessboard: treat colour quad as the board (grid will sit on the dots, not the pieces).
             board_cam = color_cam
@@ -692,6 +705,7 @@ class Calibrator:
         if not quad_looks_sane(proj_board, self.projector_size, min_area=5000.0, min_edge=40.0):
             print("verify grid would be degenerate — refusing solve")
             return None
+        debug_frame = board_src
         cal = CalibrationData(
             H_table_to_camera=H_table_to_camera,
             H_table_to_projector=H_table_to_projector,
@@ -702,19 +716,28 @@ class Calibrator:
         )
         return AutoCalibrateResult(
             calibration=cal,
-            camera_debug_bgr=annotate_camera_debug(camera_frame_bgr, color_cam, board_cam if used_board else color_cam),
+            camera_debug_bgr=annotate_camera_debug(debug_frame, color_cam, board_cam if used_board else color_cam),
             verify_projector_bgr=render_verify_overlay(self.projector_size, cal, self.layout),
             used_chessboard=used_board,
             message=msg,
         )
 
     def auto_calibrate_with_search(self, show_and_grab, show_frame) -> AutoCalibrateResult | None:
-        """Search until bright dots on table, sequential colour capture, then solve."""
+        """Search colour dots, then black-frame full chessboard detect, then solve."""
         found = search_visible_color_quad(self.projector_size, show_and_grab, show_frame)
         if found is None:
             return None
-        proj_pts, color_cam, frame = found
-        return self.auto_calibrate(frame, proj_pts=proj_pts, color_cam=color_cam)
+        proj_pts, color_cam, _frame = found
+        w, h = self.projector_size
+        black = np.zeros((h, w, 3), dtype=np.uint8)
+        print("projector black — detecting full chessboard (pieces off helps)…")
+        board_frame = None
+        for _ in range(5):
+            board_frame = show_frame(black)
+        assert board_frame is not None
+        return self.auto_calibrate(
+            board_frame, proj_pts=proj_pts, color_cam=color_cam, board_frame_bgr=board_frame
+        )
     def solve_from_correspondences(
         self,
         projector_pts: np.ndarray,
