@@ -32,9 +32,10 @@ CLASSES="$ROOT/datasets/piece_classes.txt"
 echo "LabelMe queue: $QUEUE ($count images)"
 echo "  classes: $(tr '\n' ' ' < "$CLASSES")"
 echo "  Create rectangle → pick white or black → Next (D) / Prev (A)"
-echo "  Save JSON beside each image (Ctrl+S). Use --nodata (already on)."
+echo "  Save JSON beside each image (Ctrl+S)."
 echo
 echo "When done:"
 echo "  .venv/bin/python -m gamebot.labelme_to_yolo captures/labelme_queue --out datasets/pieces"
 echo
-exec "$ROOT/.venv/bin/labelme" "$QUEUE" --labels "$CLASSES" --nodata
+# Newer labelme: omit image blobs by default (use --with-image-data only if you need them).
+exec "$ROOT/.venv/bin/labelme" "$QUEUE" --labels "$CLASSES"
