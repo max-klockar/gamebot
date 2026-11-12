@@ -7,3 +7,5 @@ dist/
 build/
 .DS_Store
 *.db
+captures/
+**/detect_out/

@@ -102,6 +102,7 @@ def _overlay(
 def main() -> None:
     p = argparse.ArgumentParser(description="Project boxes on detected white/black pieces")
     p.add_argument("--camera", choices=["mock", "picam", "file"], default="picam")
+    p.add_argument("--camera-file", type=Path, default=None, help="Still/video when --camera file")
     p.add_argument("--projector", choices=["mock", "hdmi"], default="hdmi")
     p.add_argument("--full-frame", action="store_true", help="Ignore cal board ROI")
     args = p.parse_args()
@@ -109,7 +110,7 @@ def main() -> None:
     from chess_plugin.vision import find_piece_blobs
 
     size = (1280, 720)
-    cam = create_camera(args.camera, size)
+    cam = create_camera(args.camera, size, args.camera_file)
     proj = create_projector(args.projector, size)
     cam.open()
     proj.open()
