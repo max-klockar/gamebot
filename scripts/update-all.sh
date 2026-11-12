@@ -89,4 +89,5 @@ fi
 echo "done. example:"
 echo "  ./scripts/run-pi.sh --camera picam --projector hdmi --elo 500"
 echo "  ./scripts/run-pi.sh python -m gamebot.capture_frames"
+echo "  ./scripts/run-pi.sh python -m gamebot.capture_sets"
 echo "  ./scripts/run-pi.sh python -m gamebot.piece_detect_demo"
