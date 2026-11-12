@@ -11,3 +11,4 @@ captures/
 **/detect_out/
 datasets/pieces/
 *.labelme.json
+runs/
