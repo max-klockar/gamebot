@@ -10,7 +10,6 @@ if [[ ! -d "$SRC" ]]; then
   exit 1
 fi
 
-PY="$ROOT/.venv/bin/python"
 if [[ ! -x "$ROOT/.venv/bin/labelme" ]]; then
   echo "==> pip install labelme"
   "$ROOT/.venv/bin/pip" install -q "labelme>=5.4"
@@ -19,9 +18,14 @@ fi
 # LabelMe only lists one directory (non-recursive) — flatten via symlinks.
 QUEUE="$ROOT/captures/labelme_queue"
 mkdir -p "$QUEUE"
-find "$QUEUE" -type l -delete 2>/dev/null || true
+# Refresh image symlinks only (LabelMe JSON in this folder is kept).
+find "$QUEUE" -maxdepth 1 -type l -delete 2>/dev/null || true
 count=0
 while IFS= read -r -d '' img; do
+  # Skip classical-debug overlays (…/detect_out/*)
+  case "$img" in
+    */detect_out/*|*_detect.jpg) continue ;;
+  esac
   set_name="$(basename "$(dirname "$img")")"
   link="$QUEUE/${set_name}__$(basename "$img")"
   ln -sfn "$(cd "$(dirname "$img")" && pwd)/$(basename "$img")" "$link"
