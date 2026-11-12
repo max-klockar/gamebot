@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from gamebot.geometry import TableLayout, warp_points
-from gamebot.table_surface import draw_virtual_table
+from gamebot.table_surface import draw_projected_chessboard, draw_virtual_table
 
 
 @dataclass
@@ -149,12 +149,11 @@ class UIRenderer:
         w, h = self.size
         frame = np.zeros((h, w, 3), dtype=np.uint8)
         if self.project_virtual_table:
-            # No physical table detected — project wood top + board + ChArUco corner anchors.
+            # No physical table — full wood top + board + ChArUco anchors.
             draw_virtual_table(frame, self.layout, self.H, with_chessboard=True, with_charuco_anchors=True)
         else:
-            # Always-on board frame: if a kid nudges the board, they can slide it back into the light.
-            corners = warp_points(self.layout.board_corners(), self.H).astype(np.int32)
-            cv2.polylines(frame, [corners], True, (0, 200, 140), 4)
+            # Always fill the chessboard (white / dark-green squares), not just an outline.
+            draw_projected_chessboard(frame, self.layout, self.H)
 
         for prim in scene.prims:
             if prim.kind == "button":

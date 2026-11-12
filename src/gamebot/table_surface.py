@@ -72,11 +72,12 @@ def _wood_fill(poly_px: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     return out
 
 
-def _draw_projected_chessboard(frame: np.ndarray, layout: TableLayout, H: np.ndarray) -> None:
+def draw_projected_chessboard(frame: np.ndarray, layout: TableLayout, H: np.ndarray) -> None:
+    """Filled 8x8: light squares white-ish, dark squares dark green."""
     ox, oy = layout.board_origin
     s = layout.square_mm
-    light = (210, 230, 245)
-    dark = (70, 110, 40)
+    light = (245, 245, 245)  # white (BGR)
+    dark = (45, 110, 45)  # darkish green
     for r in range(8):
         for c in range(8):
             x0, y0 = ox + c * s, oy + r * s
@@ -85,7 +86,7 @@ def _draw_projected_chessboard(frame: np.ndarray, layout: TableLayout, H: np.nda
             color = light if (r + c) % 2 == 0 else dark
             cv2.fillPoly(frame, [pts], color)
     border = warp_points(layout.board_corners(), H).astype(np.int32)
-    cv2.polylines(frame, [border], True, (20, 20, 20), 3)
+    cv2.polylines(frame, [border], True, (0, 220, 140), 4)
 
 
 def _blit_marker(frame: np.ndarray, marker_gray: np.ndarray, dest_quad_px: np.ndarray) -> None:
@@ -132,7 +133,7 @@ def draw_virtual_table(
     cv2.polylines(frame, [table_px], True, (30, 50, 70), 3)
 
     if with_chessboard:
-        _draw_projected_chessboard(frame, layout, H)
+        draw_projected_chessboard(frame, layout, H)
 
     if with_charuco_anchors:
         for mid, quad_mm in zip(_CORNER_MARKER_IDS, _margin_marker_quads_mm(layout)):

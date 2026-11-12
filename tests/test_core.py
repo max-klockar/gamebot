@@ -148,14 +148,14 @@ def test_corner_pieces_define_board() -> None:
     from chess_plugin.vision import board_quad_from_opposite_corners, setup_from_corner_pieces
 
     img = np.full((400, 400, 3), 90, dtype=np.uint8)
-    # White piece top-left-ish, black bottom-right-ish (opposite corners)
-    cv2.circle(img, (60, 60), 22, (230, 230, 230), -1)
-    cv2.circle(img, (340, 340), 22, (15, 15, 15), -1)
-    setup = setup_from_corner_pieces(img)
+    # White only, near bottom → bot white
+    cv2.circle(img, (200, 340), 22, (230, 230, 230), -1)
+    existing = np.array([[40, 40], [360, 40], [360, 360], [40, 360]], dtype=np.float64)
+    setup = setup_from_corner_pieces(img, existing_board=existing)
     assert setup is not None
     assert setup.board_corners_px.shape == (4, 2)
-    # White near top → far side → bot is black → human white
-    assert setup.human_is_white is True
+    assert setup.bot_is_white is True
+    assert setup.human_is_white is False
     quad = board_quad_from_opposite_corners((0.0, 0.0), (100.0, 100.0))
     assert quad.shape == (4, 2)
 
