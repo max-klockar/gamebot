@@ -59,7 +59,8 @@ def main() -> None:
             cam.capture_array()
         req = cam.capture_request()
         try:
-            rgb = req.make_array("main")
+            # Same as PicameraAdapter: do not RGB2BGR — buffer is already OpenCV order.
+            bgr = req.make_array("main")
             md = req.get_metadata()
         finally:
             req.release()
@@ -67,14 +68,13 @@ def main() -> None:
         cam.stop()
         cam.close()
 
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     jpg = out_dir / f"{stamp}_{args.awb}.jpg"
     cv2.imwrite(str(jpg), bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
 
-    # Also write channel-swapped copy — if THIS looks right, our RGB/BGR assumption is wrong.
-    swapped = rgb  # already RGB; writing with imwrite treats as BGR → effective R/B swap view
-    swap_path = out_dir / f"{stamp}_{args.awb}_as_if_no_cvt.jpg"
+    # Swapped copy for regression: should look *wrong* (blue pliers → orange).
+    swapped = bgr[:, :, ::-1]
+    swap_path = out_dir / f"{stamp}_{args.awb}_swapped_wrong.jpg"
     cv2.imwrite(str(swap_path), swapped, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
 
     b, g, r = cv2.split(bgr)
@@ -90,8 +90,8 @@ def main() -> None:
         "ExposureTime": md.get("ExposureTime"),
         "AnalogueGain": md.get("AnalogueGain"),
         "note": (
-            f"If table looks greener in {swap_path.name} than {jpg.name}, "
-            "RGB/BGR handling is wrong. If both look off, it's AWB/lighting."
+            f"Main {jpg.name} should match reality (blue pliers). "
+            f"{swap_path.name} is intentional R/B swap and should look wrong."
         ),
     }
     meta_path = jpg.with_suffix(".json")

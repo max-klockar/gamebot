@@ -144,6 +144,8 @@ class PicameraAdapter(CameraAdapter):
                 "and use a venv created with: python3 -m venv --system-site-packages .venv"
             ) from exc
         cam = Picamera2()
+        # RGB888 from picamera2/libcamera on Pi is already OpenCV BGR channel order
+        # in practice (verified: blue pliers looked orange after RGB2BGR).
         config = cam.create_preview_configuration(
             main={"size": self.size, "format": "RGB888"}
         )
@@ -154,8 +156,7 @@ class PicameraAdapter(CameraAdapter):
     def read(self) -> np.ndarray:
         if self._cam is None:
             raise RuntimeError("Camera not open")
-        rgb = self._cam.capture_array()
-        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        return self._cam.capture_array()
 
     def close(self) -> None:
         if self._cam is not None:
