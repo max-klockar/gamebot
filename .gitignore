@@ -9,3 +9,5 @@ build/
 *.db
 captures/
 **/detect_out/
+datasets/pieces/
+*.labelme.json
