@@ -15,6 +15,8 @@ import json
 import shutil
 from pathlib import Path
 
+import numpy as np
+
 
 DEFAULT_CLASSES = ("white", "black")
 
@@ -72,12 +74,21 @@ def convert_one(
         if label not in class_to_id:
             raise SystemExit(f"{json_path}: unknown label {label!r} (expected {sorted(class_to_id)})")
         shape_type = shape.get("shape_type") or "rectangle"
-        if shape_type not in {"rectangle", "polygon"}:
-            continue
         pts = shape.get("points") or []
-        if len(pts) < 2:
+        if shape_type == "circle" and len(pts) >= 2:
+            # LabelMe circle: center + point on circumference → axis-aligned box
+            (cx0, cy0), (px, py) = pts[0], pts[1]
+            rad = float(np.hypot(float(px) - float(cx0), float(py) - float(cy0)))
+            pts = [
+                [float(cx0) - rad, float(cy0) - rad],
+                [float(cx0) + rad, float(cy0) + rad],
+            ]
+        elif shape_type in {"rectangle", "polygon"}:
+            if len(pts) < 2:
+                continue
+        else:
             continue
-        # polygon: use axis-aligned bbox of points
+        # rectangle / polygon / circle → axis-aligned YOLO box
         xc, yc, bw, bh = _rect_to_yolo(pts, img_w, img_h)
         lines.append(f"{class_to_id[label]} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}")
 
