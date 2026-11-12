@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot update on the Pi (or laptop): pull gamebot + chess plugin, reinstall.
+# One-shot update on the Pi (or laptop): pull gamebot + chess plugin, reinstall only if needed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,7 +15,7 @@ for cand in \
   "$HOME/dev/schack/chess-plugin"
 do
   if [[ -d "$cand/.git" ]]; then
-    PLUGIN="$cand"
+    PLUGIN="$(cd "$cand" && pwd)"
     break
   fi
 done
@@ -27,20 +27,50 @@ if [[ ! -x "$VENV_PY" ]]; then
   exit 1
 fi
 
-echo "==> gamebot  ($ROOT)"
-git -C "$ROOT" pull --ff-only
+# Returns 0 if HEAD moved after pull.
+pull_changed() {
+  local dir="$1"
+  local before after
+  before="$(git -C "$dir" rev-parse HEAD)"
+  git -C "$dir" pull --ff-only
+  after="$(git -C "$dir" rev-parse HEAD)"
+  [[ "$before" != "$after" ]]
+}
 
+importable() {
+  local mod="$1"
+  "$VENV_PY" -c "import ${mod}" >/dev/null 2>&1
+}
+
+echo "==> gamebot  ($ROOT)"
+GAMEBOT_CHANGED=0
+if pull_changed "$ROOT"; then
+  GAMEBOT_CHANGED=1
+fi
+
+PLUGIN_CHANGED=0
 if [[ -n "$PLUGIN" ]]; then
   echo "==> chess plugin  ($PLUGIN)"
-  git -C "$PLUGIN" pull --ff-only
-  echo "==> pip install -e chess plugin"
-  "$PIP" install -e "$PLUGIN" -q
+  if pull_changed "$PLUGIN"; then
+    PLUGIN_CHANGED=1
+  fi
 else
   echo "==> chess plugin not found beside gamebot (skipped)"
 fi
 
-echo "==> pip install -e gamebot"
-"$PIP" install -e "$ROOT" -q
+if [[ "$PLUGIN_CHANGED" -eq 1 ]] || { [[ -n "$PLUGIN" ]] && ! importable chess_plugin; }; then
+  echo "==> pip install -e chess plugin"
+  "$PIP" install -e "$PLUGIN" -q
+elif [[ -n "$PLUGIN" ]]; then
+  echo "==> chess plugin unchanged — skip pip"
+fi
+
+if [[ "$GAMEBOT_CHANGED" -eq 1 ]] || ! importable gamebot; then
+  echo "==> pip install -e gamebot"
+  "$PIP" install -e "$ROOT" -q
+else
+  echo "==> gamebot unchanged — skip pip"
+fi
 
 # Optional hardware docs repo
 for hw in "$ROOT/../gamebot-hardware" "$HOME/src/gamebot-hardware"; do
@@ -58,4 +88,4 @@ if [[ -n "$PLUGIN" ]]; then
 fi
 echo "done. example:"
 echo "  ./scripts/run-pi.sh --camera picam --projector hdmi --elo 500"
-echo "  .venv/bin/python -m gamebot.piece_detect_demo --camera picam --projector hdmi"
+echo "  ./scripts/run-pi.sh python -m gamebot.piece_detect_demo"
