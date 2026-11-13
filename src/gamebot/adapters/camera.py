@@ -6,6 +6,23 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+# Mild digital zoom: camera FOV is wider than the projected table.
+# Applied once at read() so capture + play + cal share the same framing.
+DEFAULT_CAMERA_ZOOM = 1.2
+
+
+def center_zoom_bgr(frame: np.ndarray, zoom: float) -> np.ndarray:
+    """Center-crop by `zoom` and resize back to the original WxH."""
+    if zoom <= 1.0:
+        return frame
+    h, w = frame.shape[:2]
+    cw = max(1, int(round(w / zoom)))
+    ch = max(1, int(round(h / zoom)))
+    x0 = (w - cw) // 2
+    y0 = (h - ch) // 2
+    crop = frame[y0 : y0 + ch, x0 : x0 + cw]
+    return cv2.resize(crop, (w, h), interpolation=cv2.INTER_AREA)
+
 
 class CameraAdapter(ABC):
     @abstractmethod
@@ -24,6 +41,23 @@ class CameraAdapter(ABC):
 
     def __exit__(self, *args: object) -> None:
         self.close()
+
+
+class ZoomCamera(CameraAdapter):
+    """Wrap any camera with a consistent center zoom."""
+
+    def __init__(self, inner: CameraAdapter, zoom: float = DEFAULT_CAMERA_ZOOM) -> None:
+        self._inner = inner
+        self.zoom = float(zoom)
+
+    def open(self) -> None:
+        self._inner.open()
+
+    def read(self) -> np.ndarray:
+        return center_zoom_bgr(self._inner.read(), self.zoom)
+
+    def close(self) -> None:
+        self._inner.close()
 
 
 class MockCamera(CameraAdapter):
@@ -165,14 +199,23 @@ class PicameraAdapter(CameraAdapter):
             self._cam = None
 
 
-def create_camera(kind: str, size: tuple[int, int], path: Path | None = None) -> CameraAdapter:
+def create_camera(
+    kind: str,
+    size: tuple[int, int],
+    path: Path | None = None,
+    zoom: float = 1.0,
+) -> CameraAdapter:
     kind = kind.lower()
     if kind == "mock":
-        return MockCamera(size=size)
-    if kind == "picam":
-        return PicameraAdapter(size=size)
-    if kind == "file":
+        cam: CameraAdapter = MockCamera(size=size)
+    elif kind == "picam":
+        cam = PicameraAdapter(size=size)
+    elif kind == "file":
         if path is None:
             raise ValueError("camera=file requires a path")
-        return FileCamera(path)
-    raise ValueError(f"Unknown camera adapter: {kind}")
+        cam = FileCamera(path)
+    else:
+        raise ValueError(f"Unknown camera adapter: {kind}")
+    if zoom > 1.0:
+        return ZoomCamera(cam, zoom=zoom)
+    return cam

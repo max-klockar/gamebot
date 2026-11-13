@@ -17,7 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from gamebot.adapters import create_camera, create_projector
+from gamebot.adapters import DEFAULT_CAMERA_ZOOM, create_camera, create_projector
 from gamebot.calibration import CalibrationData
 
 
@@ -105,12 +105,13 @@ def main() -> None:
     p.add_argument("--camera-file", type=Path, default=None, help="Still/video when --camera file")
     p.add_argument("--projector", choices=["mock", "hdmi"], default="hdmi")
     p.add_argument("--full-frame", action="store_true", help="Ignore cal board ROI")
+    p.add_argument("--zoom", type=float, default=DEFAULT_CAMERA_ZOOM)
     args = p.parse_args()
 
     from chess_plugin.vision import find_piece_blobs
 
     size = (1280, 720)
-    cam = create_camera(args.camera, size, args.camera_file)
+    cam = create_camera(args.camera, size, args.camera_file, zoom=float(args.zoom))
     proj = create_projector(args.projector, size)
     cam.open()
     proj.open()

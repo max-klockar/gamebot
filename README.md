@@ -26,7 +26,15 @@ cd ../gamebot-vision
 ./scripts/export-weights.sh ../gamebot
 ```
 
-On the Pi, stills: `./scripts/run-pi.sh python -m gamebot.capture_sets`
+On the Pi, stills (same `--zoom` as play; default **1.2×** center crop):
+
+```bash
+./scripts/run-pi.sh python -m gamebot.capture_sets           # 5 per phase
+./scripts/run-pi.sh python -m gamebot.capture_sets --n 10    # 10 each
+./scripts/run-pi.sh python -m gamebot.capture_sets --n 3,12,8  # per phase
+# Enter=shoot, number at phase start=override count, s=next phase, q=quit
+# Changing zoom ⇒ re-calibrate; keep capture + gamebot --zoom identical
+```
 
 ## License
 

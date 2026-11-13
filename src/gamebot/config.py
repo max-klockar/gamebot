@@ -18,6 +18,9 @@ class AppConfig:
     camera_file: Path | None = None
     projector_size: tuple[int, int] = (1280, 720)
     camera_size: tuple[int, int] = (1280, 720)
+    # Digital center zoom (>1). Keeps 1280x720 but tighter FOV toward the table.
+    # Change ⇒ re-run calibration; keep the same zoom for capture + play.
+    camera_zoom: float = 1.2
     board_size_mm: float = 400.0
     table_margin_mm: float = 120.0
     dwell_ms: int = 600

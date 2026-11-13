@@ -146,6 +146,7 @@ def test_hypothesize_and_calibration(tmp_path: Path) -> None:
 
 def test_corner_pieces_define_board() -> None:
     from chess_plugin.vision import board_quad_from_opposite_corners, setup_from_corner_pieces
+    from gamebot.geometry import force_square_quad
 
     img = np.full((400, 400, 3), 90, dtype=np.uint8)
     # White only, near bottom → bot white
@@ -158,6 +159,32 @@ def test_corner_pieces_define_board() -> None:
     assert setup.human_is_white is False
     quad = board_quad_from_opposite_corners((0.0, 0.0), (100.0, 100.0))
     assert quad.shape == (4, 2)
+    edges = [np.linalg.norm(quad[(i + 1) % 4] - quad[i]) for i in range(4)]
+    assert max(edges) - min(edges) < 1e-6
+
+    rect = np.array([[0, 0], [200, 0], [200, 100], [0, 100]], dtype=np.float64)
+    sq = force_square_quad(rect)
+    sq_edges = [np.linalg.norm(sq[(i + 1) % 4] - sq[i]) for i in range(4)]
+    assert abs(min(sq_edges) - 100.0) < 1e-6
+    assert max(sq_edges) - min(sq_edges) < 1e-6
+
+
+def test_projector_quad_is_square() -> None:
+    from gamebot.calibration import projector_quad
+
+    q = projector_quad((1280, 720), scale=0.32)
+    edges = [np.linalg.norm(q[(i + 1) % 4] - q[i]) for i in range(4)]
+    assert max(edges) - min(edges) < 1e-6
+
+
+def test_center_zoom_keeps_size() -> None:
+    from gamebot.adapters.camera import center_zoom_bgr
+
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    frame[300:420, 540:740] = 255
+    out = center_zoom_bgr(frame, 1.2)
+    assert out.shape == frame.shape
+    assert center_zoom_bgr(frame, 1.0) is frame
 
 
 def test_virtual_table_draw_and_detect() -> None:

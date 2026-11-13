@@ -21,7 +21,7 @@ from pathlib import Path
 
 import cv2
 
-from gamebot.adapters import create_camera
+from gamebot.adapters import DEFAULT_CAMERA_ZOOM, create_camera
 from gamebot.calibration import CalibrationData
 
 
@@ -49,14 +49,21 @@ def main() -> None:
         help="Output directory (default: ./captures)",
     )
     p.add_argument("--size", default="1280x720", help="WxH")
+    p.add_argument(
+        "--zoom",
+        type=float,
+        default=DEFAULT_CAMERA_ZOOM,
+        help=f"Digital center zoom (default {DEFAULT_CAMERA_ZOOM})",
+    )
     args = p.parse_args()
 
     w, h = (int(x) for x in args.size.lower().split("x"))
     out_dir = args.out.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     roi = _board_roi()
+    zoom = float(args.zoom)
 
-    cam = create_camera(args.camera, (w, h))
+    cam = create_camera(args.camera, (w, h), zoom=zoom)
     cam.open()
     try:
         for _ in range(max(0, args.warmup)):
@@ -75,6 +82,7 @@ def main() -> None:
             meta = {
                 "image": name,
                 "size": [int(frame.shape[1]), int(frame.shape[0])],
+                "camera_zoom": zoom,
                 "board_corners_camera": roi,
                 "captured_at": datetime.now(timezone.utc).isoformat(),
             }

@@ -34,7 +34,9 @@ class App:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.layout = TableLayout(board_size_mm=config.board_size_mm, margin_mm=config.table_margin_mm)
-        self.camera = create_camera(config.camera, config.camera_size, config.camera_file)
+        self.camera = create_camera(
+            config.camera, config.camera_size, config.camera_file, zoom=config.camera_zoom
+        )
         self.projector = create_projector(config.projector, config.projector_size)
         led_kind = config.led_backend
         if led_kind == "auto" and config.camera == "mock" and config.projector == "mock":
@@ -394,6 +396,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="auto",
         help="Project a wood table+board+ChArUco when no physical table is seen (default auto)",
     )
+    p.add_argument(
+        "--zoom",
+        type=float,
+        default=None,
+        help="Camera digital zoom (default 1.2). Same value for capture + play; re-calibrate if changed",
+    )
     return p
 
 
@@ -416,6 +424,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     if args.led is not None:
         kwargs["led_backend"] = args.led
+    if args.zoom is not None:
+        kwargs["camera_zoom"] = float(args.zoom)
     if args.data_dir is not None:
         cfg = AppConfig(data_dir=args.data_dir, **kwargs)
     else:

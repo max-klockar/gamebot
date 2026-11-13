@@ -65,3 +65,42 @@ def cv2_perspective(pts: np.ndarray, H: np.ndarray) -> np.ndarray:
     import cv2
 
     return cv2.perspectiveTransform(pts, H)
+
+
+def force_square_quad(corners: np.ndarray) -> np.ndarray:
+    """Force a TL,TR,BR,BL quad to a square using the shortest edge.
+
+    Keeps the same centre and approximate orientation (from the longest edge).
+    Useful for projected boards: humans place two corner pieces and the result
+    otherwise drifts into a rectangle that's hard to notice until play starts.
+    Do **not** use on a physical chessboard under strong perspective (that's a
+    trapezoid in the image on purpose).
+    """
+    p = np.asarray(corners, dtype=np.float64).reshape(4, 2)
+    edges = np.array([p[(i + 1) % 4] - p[i] for i in range(4)], dtype=np.float64)
+    lengths = np.linalg.norm(edges, axis=1)
+    side = float(np.min(lengths))
+    if side < 1.0 or not np.isfinite(side):
+        return p.copy()
+
+    i = int(np.argmax(lengths))
+    u = edges[i] / lengths[i]
+    v = np.array([-u[1], u[0]], dtype=np.float64)
+    if float(np.dot(v, edges[(i + 1) % 4])) < 0:
+        v = -v
+
+    c = p.mean(axis=0)
+    h = side / 2.0
+    raw = np.array(
+        [
+            c - u * h - v * h,
+            c + u * h - v * h,
+            c + u * h + v * h,
+            c - u * h + v * h,
+        ],
+        dtype=np.float64,
+    )
+    by_y = raw[np.argsort(raw[:, 1])]
+    top = by_y[:2][np.argsort(by_y[:2, 0])]
+    bot = by_y[2:][np.argsort(by_y[2:, 0])]
+    return np.array([top[0], top[1], bot[1], bot[0]], dtype=np.float64)

@@ -7,7 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from gamebot.geometry import TableLayout, warp_points
+from gamebot.geometry import TableLayout, force_square_quad, warp_points
 
 
 @dataclass
@@ -103,19 +103,22 @@ def projector_quad(
     cy: float | None = None,
     scale: float = 0.32,
 ) -> np.ndarray:
-    """Axis-aligned TL,TR,BR,BL quad. scale=1 spans nearly full frame; start small/centered."""
+    """Axis-aligned square TL,TR,BR,BL. scale=1 spans nearly the short frame edge."""
     w, h = size
     cx = w * 0.5 if cx is None else cx
     cy = h * 0.5 if cy is None else cy
-    # Half-width/height of the quad in pixels
-    hw = w * 0.45 * scale
-    hh = h * 0.45 * scale
-    hw = min(hw, cx - 20, w - 20 - cx)
-    hh = min(hh, cy - 20, h - 20 - cy)
-    hw = max(hw, 40)
-    hh = max(hh, 40)
+    # Always square — using w and h separately made a 16:9 rectangle that looked
+    # like a stretched chessboard once mapped onto the table.
+    half = min(w, h) * 0.45 * scale
+    half = min(half, cx - 20, w - 20 - cx, cy - 20, h - 20 - cy)
+    half = max(half, 40)
     return np.array(
-        [[cx - hw, cy - hh], [cx + hw, cy - hh], [cx + hw, cy + hh], [cx - hw, cy + hh]],
+        [
+            [cx - half, cy - half],
+            [cx + half, cy - half],
+            [cx + half, cy + half],
+            [cx - half, cy + half],
+        ],
         dtype=np.float64,
     )
 
@@ -355,10 +358,9 @@ def capture_corners_sequential(
 def _clamp_quad_center(size: tuple[int, int], cx: float, cy: float, scale: float) -> tuple[float, float, float]:
     w, h = size
     scale = float(np.clip(scale, 0.18, 0.95))
-    hw = w * 0.45 * scale
-    hh = h * 0.45 * scale
-    cx = float(np.clip(cx, 20 + hw, w - 20 - hw))
-    cy = float(np.clip(cy, 20 + hh, h - 20 - hh))
+    half = min(w, h) * 0.45 * scale
+    cx = float(np.clip(cx, 20 + half, w - 20 - half))
+    cy = float(np.clip(cy, 20 + half, h - 20 - half))
     return cx, cy, scale
 
 
@@ -776,11 +778,13 @@ class Calibrator:
             H_table_to_projector = H_cam_to_proj @ H_table_to_camera if H_table_to_camera is not None else None
             msg = "ok: colours + full chessboard"
         else:
-            # No chessboard: treat colour quad as the board (grid will sit on the dots, not the pieces).
-            board_cam = color_cam
+            # No chessboard: colour dots define the board. Force a square (shortest
+            # edge) so a 16:9 frame never becomes a stretched projected board.
+            board_cam = force_square_quad(color_cam)
+            proj_pts = force_square_quad(proj_pts)
             H_table_to_camera = estimate_homography(table, board_cam)
             H_table_to_projector = estimate_homography(table, proj_pts)
-            msg = "ok: colours only — verify grid on colour rectangle (board contrast too low?)"
+            msg = "ok: colours only — verify grid on colour square (board contrast too low?)"
 
         if H_table_to_camera is None or H_table_to_projector is None:
             return None

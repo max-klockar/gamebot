@@ -16,7 +16,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from gamebot.adapters import create_camera, create_projector
+from gamebot.adapters import DEFAULT_CAMERA_ZOOM, create_camera, create_projector
 from gamebot.adapters.led import (
     LedMode,
     LedRing,
@@ -80,14 +80,20 @@ def run_led_demo(seconds: float, led_count: int, loop: bool) -> None:
         led.close()
 
 
-def run_auto_calibrate(camera: str, projector: str, out_jpg: Path, settle_s: float = 1.0) -> int:
+def run_auto_calibrate(
+    camera: str,
+    projector: str,
+    out_jpg: Path,
+    settle_s: float = 1.0,
+    zoom: float = DEFAULT_CAMERA_ZOOM,
+) -> int:
     """Search coloured corners onto the table, solve, verify grid, write debug JPG."""
     from gamebot.calibration import render_color_corner_pattern
 
     size = (1280, 720)
     layout = TableLayout()
     calibrator = Calibrator(layout, size, size)
-    cam = create_camera(camera, size)
+    cam = create_camera(camera, size, zoom=zoom)
     proj = create_projector(projector, size)
     cam.open()
     proj.open()
@@ -157,6 +163,12 @@ def main() -> None:
     p.add_argument("--led-count", type=int, default=90, help="WS2812 LED count (default 90)")
     p.add_argument("--loop", action="store_true", help="With --led-demo, repeat until Ctrl+C")
     p.add_argument("--seconds", type=float, default=9.0, help="Total demo length (split across 3 colors)")
+    p.add_argument(
+        "--zoom",
+        type=float,
+        default=DEFAULT_CAMERA_ZOOM,
+        help=f"Digital center zoom (default {DEFAULT_CAMERA_ZOOM})",
+    )
     args = p.parse_args()
 
     if args.led_demo:
@@ -164,9 +176,11 @@ def main() -> None:
         return
 
     if args.calibrate:
-        raise SystemExit(run_auto_calibrate(args.camera, args.projector, args.out))
+        raise SystemExit(
+            run_auto_calibrate(args.camera, args.projector, args.out, zoom=float(args.zoom))
+        )
 
-    cam = create_camera(args.camera, (1280, 720))
+    cam = create_camera(args.camera, (1280, 720), zoom=float(args.zoom))
     proj = create_projector(args.projector, (1280, 720))
     led = _make_led_ring("auto" if args.led else "mock", args.led_count)
     cam.open()
