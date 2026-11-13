@@ -222,6 +222,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Guided piece-capture sets (Enter to shoot)")
     p.add_argument(
         "--n",
+        type=str,
         default="5",
         help="Stills per phase: one number for all, or comma list matching phases "
         f"(default 5). Example: --n 0,0,10 for phase 3 only",
