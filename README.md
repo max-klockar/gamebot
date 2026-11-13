@@ -31,8 +31,9 @@ On the Pi, stills (same `--zoom` as play; default **1.2×** center crop):
 ```bash
 ./scripts/run-pi.sh python -m gamebot.capture_sets           # 5 per phase
 ./scripts/run-pi.sh python -m gamebot.capture_sets --n 10    # 10 each
-./scripts/run-pi.sh python -m gamebot.capture_sets --n 3,12,8  # per phase
+./scripts/run-pi.sh python -m gamebot.capture_sets --n 0,0,10  # phase 3 only
 # Enter=shoot, number at phase start=override count, s=next phase, q=quit
+# Chess proj is a centred training square (ignores cal pose). Phase-1 guide is inset.
 # Changing zoom ⇒ re-calibrate; keep capture + gamebot --zoom identical
 ```
 

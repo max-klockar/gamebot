@@ -6,19 +6,25 @@ chessboard; you rearrange pieces, then press Enter in the SSH terminal to shoot.
 
   ./scripts/run-pi.sh python -m gamebot.capture_sets
   ./scripts/run-pi.sh python -m gamebot.capture_sets --n 10
-  ./scripts/run-pi.sh python -m gamebot.capture_sets --n 3,12,8
+  ./scripts/run-pi.sh python -m gamebot.capture_sets --n 0,0,10   # phase 3 only
 
 Controls (stdin):
   Enter     — capture next still (or start phase)
   <number>  — at phase start: override shot count for this phase
   s         — skip rest of this phase / skip phase
   q         — quit
+
+Training projection ignores calibration pose/size (cal boards often sit
+off-centre and clip). Chess is a centred square in projector pixels with mild
+size jitter. Phase-1 guide border is inset ~10% so projector overscan still
+shows it; it goes black for each shot.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import random
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,8 +35,6 @@ import numpy as np
 
 from gamebot.adapters import DEFAULT_CAMERA_ZOOM, create_camera, create_projector
 from gamebot.calibration import CalibrationData
-from gamebot.geometry import TableLayout
-from gamebot.table_surface import draw_projected_chessboard
 
 
 @dataclass(frozen=True)
@@ -94,46 +98,17 @@ def _load_cal() -> CalibrationData | None:
         return None
 
 
-def _proj_frame(size: tuple[int, int], kind: str, cal: CalibrationData | None) -> np.ndarray:
-    w, h = size
-    frame = np.zeros((h, w, 3), dtype=np.uint8)
-    if kind == "black":
-        return frame
-    layout = TableLayout()
-    if cal is not None:
-        draw_projected_chessboard(frame, layout, cal.H_table_to_projector)
-    else:
-        # No cal: centred board in projector pixels (rough, still useful).
-        side = int(min(w, h) * 0.62)
-        x0 = (w - side) // 2
-        y0 = (h - side) // 2
-        sq = side / 8
-        for r in range(8):
-            for c in range(8):
-                color = (245, 245, 245) if (r + c) % 2 == 0 else (45, 110, 45)
-                x1, y1 = int(x0 + c * sq), int(y0 + r * sq)
-                x2, y2 = int(x0 + (c + 1) * sq), int(y0 + (r + 1) * sq)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
-        cv2.polylines(
-            frame,
-            [np.array([[x0, y0], [x0 + side, y0], [x0 + side, y0 + side], [x0, y0 + side]], dtype=np.int32)],
-            True,
-            (0, 220, 140),
-            4,
-        )
-        cv2.putText(frame, "NO CAL — centred board", (40, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
-    return frame
-
-
 def _guide_border_frame(size: tuple[int, int]) -> np.ndarray:
-    """Full-bleed projector outline so you can see the playable FOV on a bare table.
+    """FOV outline inset enough to survive typical projector overscan.
 
-    Only shown while arranging pieces — cleared to black before the camera
-    fires, so training JPGs match real play (no guide border).
+    Only shown while arranging — cleared to black before the camera fires.
     """
     w, h = size
     frame = np.zeros((h, w, 3), dtype=np.uint8)
-    inset = 8
+    # ~10% inset: a 8px rim is invisible on many projectors
+    inset = max(48, int(round(min(w, h) * 0.10)))
+    thickness = max(10, inset // 6)
+    color = (0, 255, 180)
     pts = np.array(
         [
             [inset, inset],
@@ -143,39 +118,80 @@ def _guide_border_frame(size: tuple[int, int]) -> np.ndarray:
         ],
         dtype=np.int32,
     )
-    cv2.polylines(frame, [pts], True, (0, 255, 180), 6)
-    # Corner ticks — easier to spot under room light than a thin line alone
-    tick = max(28, min(w, h) // 18)
+    cv2.polylines(frame, [pts], True, color, thickness)
+    tick = max(40, inset)
     for x, y, dx, dy in (
         (inset, inset, 1, 1),
         (w - 1 - inset, inset, -1, 1),
         (w - 1 - inset, h - 1 - inset, -1, -1),
         (inset, h - 1 - inset, 1, -1),
     ):
-        cv2.line(frame, (x, y), (x + dx * tick, y), (0, 255, 180), 6)
-        cv2.line(frame, (x, y), (x, y + dy * tick), (0, 255, 180), 6)
+        cv2.line(frame, (x, y), (x + dx * tick, y), color, thickness)
+        cv2.line(frame, (x, y), (x, y + dy * tick), color, thickness)
     cv2.putText(
         frame,
-        "GUIDE — goes black for each shot",
-        (40, 48),
+        "GUIDE (overscan-safe) — goes BLACK for each shot",
+        (inset + 12, inset + 36),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.9,
-        (220, 220, 220),
+        0.85,
+        (240, 240, 240),
         2,
     )
     return frame
 
 
-def _arrange_frame(size: tuple[int, int], aset: CaptureSet, cal: CalibrationData | None) -> np.ndarray:
-    """What to project while moving pieces (may include a temporary guide)."""
-    if not aset.physical_board and aset.project == "black":
-        return _guide_border_frame(size)
-    return _proj_frame(size, aset.project, cal)
+def _training_chessboard(
+    size: tuple[int, int],
+    rng: random.Random,
+    *,
+    side_frac: float | None = None,
+) -> tuple[np.ndarray, dict]:
+    """Centred square 8×8 in projector pixels — ignores calibration pose/size.
+
+    Mild size (+ tiny centre) jitter for variety; always fully inside the frame
+    with overscan margin so the board never clips off the projector.
+    """
+    w, h = size
+    short = min(w, h)
+    margin = max(40, int(round(short * 0.08)))
+    max_side = short - 2 * margin
+    frac = float(side_frac) if side_frac is not None else rng.uniform(0.50, 0.68)
+    side = int(round(short * frac))
+    side = max(160, min(side, max_side))
+
+    x0 = (w - side) // 2 + rng.randint(-margin // 3, margin // 3)
+    y0 = (h - side) // 2 + rng.randint(-margin // 3, margin // 3)
+    x0 = int(np.clip(x0, margin, w - side - margin))
+    y0 = int(np.clip(y0, margin, h - side - margin))
+
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+    sq = side / 8.0
+    light = (245, 245, 245)
+    dark = (45, 110, 45)
+    for r in range(8):
+        for c in range(8):
+            color = light if (r + c) % 2 == 0 else dark
+            x1, y1 = int(x0 + c * sq), int(y0 + r * sq)
+            x2, y2 = int(x0 + (c + 1) * sq), int(y0 + (r + 1) * sq)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
+    cv2.polylines(
+        frame,
+        [np.array([[x0, y0], [x0 + side, y0], [x0 + side, y0 + side], [x0, y0 + side]], dtype=np.int32)],
+        True,
+        (0, 220, 140),
+        4,
+    )
+    meta = {
+        "board_px": [x0, y0, side],
+        "side_frac": round(side / short, 4),
+        "source": "training_centred",
+    }
+    return frame, meta
 
 
-def _capture_frame(size: tuple[int, int], aset: CaptureSet, cal: CalibrationData | None) -> np.ndarray:
-    """What to project for the actual still (no guide chrome)."""
-    return _proj_frame(size, aset.project, cal)
+def _black_frame(size: tuple[int, int]) -> np.ndarray:
+    w, h = size
+    return np.zeros((h, w, 3), dtype=np.uint8)
 
 
 def _prompt(msg: str) -> str:
@@ -195,7 +211,7 @@ def _phase_plan(default_n: int) -> int | None:
             return default_n
         if cmd == "q":
             raise SystemExit(0)
-        if cmd in ("s", "skip", "0"):
+        if cmd in ("s", "skip"):
             return None
         if cmd.isdigit():
             return int(cmd)
@@ -208,7 +224,7 @@ def main() -> None:
         "--n",
         default="5",
         help="Stills per phase: one number for all, or comma list matching phases "
-        f"(default 5). Example: --n 3,12,8 for {len(SETS)} phases",
+        f"(default 5). Example: --n 0,0,10 for phase 3 only",
     )
     p.add_argument("--out", type=Path, default=Path("captures/sets"))
     p.add_argument("--camera", choices=["picam", "mock"], default="picam")
@@ -221,6 +237,12 @@ def main() -> None:
         default=DEFAULT_CAMERA_ZOOM,
         help=f"Digital center zoom (default {DEFAULT_CAMERA_ZOOM}; match gamebot --zoom)",
     )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="RNG seed for chessboard size jitter (default: random)",
+    )
     args = p.parse_args()
 
     counts = _parse_counts(args.n, len(SETS))
@@ -228,9 +250,10 @@ def main() -> None:
     assert len(size) == 2
     out_root = args.out.expanduser().resolve()
     out_root.mkdir(parents=True, exist_ok=True)
-    cal = _load_cal()
+    cal = _load_cal()  # optional meta only — not used for projection pose
     session = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     zoom = float(args.zoom)
+    rng = random.Random(args.seed)
 
     cam = create_camera(args.camera, size, zoom=zoom)
     proj = create_projector(args.projector, size)
@@ -243,7 +266,8 @@ def main() -> None:
     print(f"Plan: " + " | ".join(f"{s.folder}×{n}" for s, n in zip(SETS, counts)))
     print(f"Output: {out_root}")
     print(f"Zoom: {zoom}× (must match play / cal)")
-    print(f"Calibration: {'yes' if cal else 'NO (chess proj will be centred guess)'}")
+    print("Chess proj: centred training square (ignores cal pose — avoids off-screen boards)")
+    print(f"Cal on disk: {'yes (meta only)' if cal else 'no'}")
     print()
 
     try:
@@ -254,16 +278,31 @@ def main() -> None:
         for aset, default_n in zip(SETS, counts):
             set_dir = out_root / aset.folder
             set_dir.mkdir(parents=True, exist_ok=True)
-            arrange = _arrange_frame(size, aset, cal)
-            shoot = _capture_frame(size, aset, cal)
             use_guide = not aset.physical_board and aset.project == "black"
+            chess_meta: dict | None = None
+
+            if aset.project == "chess":
+                arrange, chess_meta = _training_chessboard(size, rng)
+                shoot = arrange
+            elif use_guide:
+                arrange = _guide_border_frame(size)
+                shoot = _black_frame(size)
+            else:
+                arrange = _black_frame(size)
+                shoot = arrange
+
             proj.show(arrange)
 
             print("=" * 60)
             print(aset.title)
             print(aset.prep)
             if use_guide:
-                print("Guide border ON while you arrange — goes BLACK for each shot.")
+                print("Guide border ON (inset ~10%) while you arrange — BLACK for each shot.")
+            if aset.project == "chess" and chess_meta is not None:
+                print(
+                    f"Training board side≈{chess_meta['side_frac']:.0%} of short edge "
+                    f"(re-rolls slightly each shot)."
+                )
             print(f"Default for this phase: {default_n} shots (vary piece counts/angles).")
             print("=" * 60)
             try:
@@ -271,11 +310,8 @@ def main() -> None:
             except SystemExit:
                 print("quit")
                 break
-            if n is None:
+            if n is None or n == 0:
                 print("  skip phase")
-                continue
-            if n == 0:
-                print("  skip phase (0 shots)")
                 continue
             proj.show(arrange)
 
@@ -289,7 +325,7 @@ def main() -> None:
                 if cmd in ("s", "skip"):
                     print("  next phase")
                     break
-                # Drop guide chrome before the still so labels match real play
+
                 proj.show(shoot)
                 time.sleep(0.20)
                 img = cam.read()
@@ -305,14 +341,15 @@ def main() -> None:
                     "size": [int(img.shape[1]), int(img.shape[0])],
                     "camera_zoom": zoom,
                     "guide_cleared_for_shot": use_guide,
-                    "board_corners_camera": None
-                    if cal is None
-                    else cal.board_corners_camera.astype(float).tolist(),
+                    "projected_board": chess_meta,
                     "captured_at": datetime.now(timezone.utc).isoformat(),
                 }
                 path.with_suffix(".json").write_text(json.dumps(meta, indent=2) + "\n")
                 print(f"  saved {path}")
                 if i < n:
+                    if aset.project == "chess":
+                        arrange, chess_meta = _training_chessboard(size, rng)
+                        shoot = arrange
                     proj.show(arrange)
                     print("  → move pieces to new spots, then continue")
 
