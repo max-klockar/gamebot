@@ -19,8 +19,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-# Laptop labeling / train helpers (not needed on the Pi).
-vision-train = ["labelme>=5.4", "ultralytics>=8.3"]
 # LED strip / GPIO only — enough for --led-demo (no apt build deps).
 pi-led = ["RPi.GPIO>=0.7", "rpi-ws281x>=5.0"]
 # Camera stack: needs `sudo apt install libcap-dev` (and usually works better via

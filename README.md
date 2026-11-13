@@ -13,14 +13,20 @@ After calibrate, plugins run `identify()`. One match starts that game; zero or m
 
 ## Chess vision (pieces + board)
 
-Strategy, labeling, perspective/8×8 math, and train commands:
-[docs/vision-strategy.md](docs/vision-strategy.md).
+**Training** (LabelMe, YOLO, datasets) lives in a separate laptop repo:
+`gamebot-vision` (sibling checkout). The Pi only needs capture + exported
+weights under `models/vision/`.
 
 ```bash
-./scripts/label-pieces.sh --missing-board   # add board field to existing labels
-./scripts/train-board.sh
-./scripts/train-pieces.sh
+# on laptop
+cd ../gamebot-vision
+./scripts/pull-captures.sh max@gamebot
+./scripts/label.sh
+./scripts/train-board.sh && ./scripts/train-pieces.sh
+./scripts/export-weights.sh ../gamebot
 ```
+
+On the Pi, stills: `./scripts/run-pi.sh python -m gamebot.capture_sets`
 
 ## License
 

@@ -9,9 +9,7 @@ build/
 *.db
 captures/
 **/detect_out/
-datasets/pieces/
-datasets/board/
+datasets/
 *.labelme.json
 yolov8n.pt
-runs/
 runs/
