@@ -10,5 +10,8 @@ build/
 captures/
 **/detect_out/
 datasets/pieces/
+datasets/board/
 *.labelme.json
+yolov8n.pt
+runs/
 runs/
