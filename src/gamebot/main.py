@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 from enum import Enum, auto
 from pathlib import Path
 
@@ -66,6 +67,23 @@ class App:
         self._table_check_counter = 0
         self._last_virtual_table: bool | None = None
         self._virtual_table_latched = config.virtual_table == "always"
+        self._stop_requested = False
+
+    def _request_stop(self, signum: int, _frame: object) -> None:
+        """GPIO shutdown / systemd / Ctrl+C — exit the loop cleanly."""
+        if self._stop_requested:
+            return
+        try:
+            name = signal.Signals(signum).name
+        except ValueError:
+            name = str(signum)
+        print(f"shutting down ({name})…")
+        self._stop_requested = True
+        self.ambient.stop()
+        try:
+            self.led.off()
+        except Exception:  # noqa: BLE001 — never block halt
+            pass
 
     def load_or_mock_calibration(self) -> None:
         path = self.config.calibration_path
@@ -78,6 +96,9 @@ class App:
         self.renderer.set_homography(self.calibration.H_table_to_projector)
 
     def run(self) -> int:
+        self._stop_requested = False
+        prev_term = signal.signal(signal.SIGTERM, self._request_stop)
+        prev_int = signal.signal(signal.SIGINT, self._request_stop)
         self.camera.open()
         self.projector.open()
         self.led.open()
@@ -87,6 +108,8 @@ class App:
         try:
             return self._loop()
         finally:
+            signal.signal(signal.SIGTERM, prev_term)
+            signal.signal(signal.SIGINT, prev_int)
             self.ambient.stop()
             self.led.close()
             self.projector.close()
@@ -94,7 +117,7 @@ class App:
 
     def _loop(self) -> int:
         splash_frames = 0
-        while True:
+        while not self._stop_requested:
             frame = self.camera.read()
             scene = self._build_scene()
 
@@ -131,7 +154,7 @@ class App:
                     self._handle_zone(clicked)
 
             key = self.projector.poll_key(30)
-            if key in (ord("q"), 27):
+            if self._stop_requested or key in (ord("q"), 27):
                 return 0
             if key != 255 and key != -1:
                 self._handle_key(key, scene)
@@ -173,6 +196,8 @@ class App:
                     self.led.set_mode(LedMode.IDLE)
                     self.session = None
                     self.phase = HostPhase.IDENTIFY
+
+        return 0
 
     def _run_auto_calibration(self) -> None:
         from gamebot.calibration import render_color_corner_pattern

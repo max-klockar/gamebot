@@ -227,7 +227,12 @@ def main() -> None:
         help="Stills per phase: one number for all, or comma list matching phases "
         f"(default 5). Example: --n 0,0,10 for phase 3 only",
     )
-    p.add_argument("--out", type=Path, default=Path("captures/sets"))
+    p.add_argument(
+        "--out",
+        type=Path,
+        default=Path.home() / ".gamebot" / "captures" / "sets",
+        help="Stills root (default: ~/.gamebot/captures/sets — not inside the git checkout)",
+    )
     p.add_argument("--camera", choices=["picam", "mock"], default="picam")
     p.add_argument("--projector", choices=["hdmi", "mock"], default="hdmi")
     p.add_argument("--size", default="1280x720")
@@ -356,7 +361,9 @@ def main() -> None:
 
         print()
         print("done.")
-        print(f"scp -r max@gamebot:{out_root} ./captures/sets")
+        print("On the laptop (gamebot-vision):")
+        print(f"  ./scripts/pull-captures.sh max@gamebot")
+        print(f"  # remote path: {out_root}")
     finally:
         proj.close()
         cam.close()

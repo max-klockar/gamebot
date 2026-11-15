@@ -284,7 +284,11 @@ class LedRing:
         self.set_mode(LedMode.IDLE)
 
     def off(self) -> None:
-        self.set_mode(LedMode.IDLE)
+        """Black out immediately and stop the animator (e.g. soft power-off)."""
+        self._stop.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+            self._thread = None
         self.current_rgb = (0, 0, 0)
         try:
             self.backend.show((0, 0, 0))

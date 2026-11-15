@@ -6,9 +6,8 @@ Usage on the Pi:
   ./scripts/run-pi.sh python -m gamebot.capture_frames --n 5
 
 Copies cal board ROI into a sidecar JSON next to each JPG so laptop tuning
-matches the live ROI. Then scp the folder to your laptop, e.g.:
-
-  scp -r max@gamebot:~/src/gamebot/captures ./captures
+matches the live ROI. Default out is ~/.gamebot/captures (outside the git
+tree). Pull into gamebot-vision with ./scripts/pull-captures.sh.
 """
 
 from __future__ import annotations
@@ -45,8 +44,8 @@ def main() -> None:
     p.add_argument(
         "--out",
         type=Path,
-        default=Path("captures"),
-        help="Output directory (default: ./captures)",
+        default=Path.home() / ".gamebot" / "captures",
+        help="Output directory (default: ~/.gamebot/captures)",
     )
     p.add_argument("--size", default="1280x720", help="WxH")
     p.add_argument(
@@ -97,8 +96,7 @@ def main() -> None:
     print()
     print(f"{len(saved)} frame(s) in {out_dir}")
     print("copy to laptop, then tune:")
-    print(f"  scp -r '{out_dir}' ./captures")
-    print("  .venv/bin/python -m gamebot.tune_piece_detect captures/")
+    print("  cd ../gamebot-vision && ./scripts/pull-captures.sh max@gamebot")
 
 
 if __name__ == "__main__":

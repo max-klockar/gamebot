@@ -13,28 +13,28 @@ After calibrate, plugins run `identify()`. One match starts that game; zero or m
 
 ## Chess vision (pieces + board)
 
-**Training** (LabelMe, YOLO, datasets) lives in a separate laptop repo:
-`gamebot-vision` (sibling checkout). The Pi only needs capture + exported
-weights under `models/vision/`.
+**Training** (LabelMe, YOLO, datasets) lives in laptop repo `gamebot-vision`.
+Stills are **not** kept in this git tree:
+
+- Pi (temp): `~/.gamebot/captures/sets/`
+- Laptop: `gamebot-vision/captures/sets/` (gitignored)
 
 ```bash
 # on laptop
 cd ../gamebot-vision
-./scripts/pull-captures.sh max@gamebot
-./scripts/label.sh
+./scripts/pull-captures.sh max@gamebot          # then optional --purge
+./scripts/label.sh --new-only
 ./scripts/train-board.sh && ./scripts/train-pieces.sh
 ./scripts/export-weights.sh ../gamebot
 ```
 
-On the Pi, stills (same `--zoom` as play; default **1.2×** center crop):
+On the Pi (same `--zoom` as play; default **1.2×** center crop):
 
 ```bash
-./scripts/run-pi.sh python -m gamebot.capture_sets           # 5 per phase
-./scripts/run-pi.sh python -m gamebot.capture_sets --n 10    # 10 each
-./scripts/run-pi.sh python -m gamebot.capture_sets --n 0,0,10  # phase 3 only
-# Enter=shoot, number at phase start=override count, s=next phase, q=quit
-# Chess proj is a centred training square (ignores cal pose). Phase-1 guide is inset.
-# Changing zoom ⇒ re-calibrate; keep capture + gamebot --zoom identical
+./scripts/run-pi.sh python -m gamebot.capture_sets           # → ~/.gamebot/captures/sets
+./scripts/run-pi.sh python -m gamebot.capture_sets --n 10
+./scripts/run-pi.sh python -m gamebot.capture_sets --n 0,0,10
+# Enter=shoot, number=override, s=next phase, q=quit
 ```
 
 ## License
