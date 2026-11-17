@@ -22,10 +22,11 @@ import cv2
 
 from gamebot.adapters import DEFAULT_CAMERA_ZOOM, create_camera
 from gamebot.calibration import CalibrationData
+from gamebot.paths import gamebot_home
 
 
 def _board_roi() -> list[list[float]] | None:
-    path = Path.home() / ".gamebot" / "calibration.json"
+    path = gamebot_home() / "calibration.json"
     if not path.is_file():
         return None
     try:
@@ -44,8 +45,8 @@ def main() -> None:
     p.add_argument(
         "--out",
         type=Path,
-        default=Path.home() / ".gamebot" / "captures",
-        help="Output directory (default: ~/.gamebot/captures)",
+        default=None,
+        help="Output directory (default: <user>/.gamebot/captures — SUDO_USER under run-pi.sh)",
     )
     p.add_argument("--size", default="1280x720", help="WxH")
     p.add_argument(
@@ -57,7 +58,7 @@ def main() -> None:
     args = p.parse_args()
 
     w, h = (int(x) for x in args.size.lower().split("x"))
-    out_dir = args.out.expanduser().resolve()
+    out_dir = (args.out or (gamebot_home() / "captures")).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     roi = _board_roi()
     zoom = float(args.zoom)

@@ -90,6 +90,9 @@ class Scene:
         self.zones: list[HitZone] = []
         self.prims: list[DrawPrim] = []
         self.title: str = ""
+        # False during play: leave board area black so camera piece/move vision
+        # matches black-projection training (no projected chess grid on pieces).
+        self.project_chessboard: bool = True
 
     def clear(self) -> None:
         self.zones.clear()
@@ -150,9 +153,15 @@ class UIRenderer:
         frame = np.zeros((h, w, 3), dtype=np.uint8)
         if self.project_virtual_table:
             # No physical table — full wood top + board + ChArUco anchors.
-            draw_virtual_table(frame, self.layout, self.H, with_chessboard=True, with_charuco_anchors=True)
-        else:
-            # Always fill the chessboard (white / dark-green squares), not just an outline.
+            draw_virtual_table(
+                frame,
+                self.layout,
+                self.H,
+                with_chessboard=scene.project_chessboard,
+                with_charuco_anchors=True,
+            )
+        elif scene.project_chessboard:
+            # Filled 8×8 for menus / identify. Play scenes leave this black.
             draw_projected_chessboard(frame, self.layout, self.H)
 
         for prim in scene.prims:

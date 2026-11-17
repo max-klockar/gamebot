@@ -50,10 +50,12 @@ run_cmd() {
     exec "$@"
   fi
   # Fresh root env: pass display vars explicitly (sudoers often strips -E).
+  # Keep SUDO_USER so capture/cal paths use /home/max/.gamebot, not /root.
   exec sudo env \
     DISPLAY="$DISPLAY" \
     SDL_VIDEODRIVER="$SDL_VIDEODRIVER" \
     XDG_RUNTIME_DIR=/run/user/0 \
+    SUDO_USER="$REAL_USER" \
     PATH="$PATH" \
     bash -c 'mkdir -p /run/user/0 && chmod 700 /run/user/0; unset WAYLAND_DISPLAY; exec "$@"' -- "$@"
 }

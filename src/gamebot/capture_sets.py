@@ -34,6 +34,7 @@ import cv2
 import numpy as np
 
 from gamebot.adapters import DEFAULT_CAMERA_ZOOM, create_camera, create_projector
+from gamebot.paths import gamebot_home
 from gamebot.calibration import CalibrationData
 
 
@@ -65,8 +66,9 @@ SETS: tuple[CaptureSet, ...] = (
         folder="03_noboard_chessproj",
         project="chess",
         physical_board=False,
-        title="Phase 3/3 — no physical board, project CHESSBOARD",
-        prep="Remove the physical board. Place pieces where the projected squares are.",
+        title="Phase 3/3 — no physical board, project CHESSBOARD (board labels only)",
+        prep="Remove the physical board. Place pieces on the projected squares. "
+        "Label BOARD only later — piece training skips chessproj.",
     ),
 )
 
@@ -89,7 +91,7 @@ def _parse_counts(raw: str, n_sets: int) -> list[int]:
 
 
 def _load_cal() -> CalibrationData | None:
-    path = Path.home() / ".gamebot" / "calibration.json"
+    path = gamebot_home() / "calibration.json"
     if not path.is_file():
         return None
     try:
@@ -230,8 +232,8 @@ def main() -> None:
     p.add_argument(
         "--out",
         type=Path,
-        default=Path.home() / ".gamebot" / "captures" / "sets",
-        help="Stills root (default: ~/.gamebot/captures/sets — not inside the git checkout)",
+        default=None,
+        help="Stills root (default: <user>/.gamebot/captures/sets — uses SUDO_USER under run-pi.sh)",
     )
     p.add_argument("--camera", choices=["picam", "mock"], default="picam")
     p.add_argument("--projector", choices=["hdmi", "mock"], default="hdmi")
@@ -254,7 +256,7 @@ def main() -> None:
     counts = _parse_counts(args.n, len(SETS))
     size = tuple(int(x) for x in args.size.lower().split("x"))
     assert len(size) == 2
-    out_root = args.out.expanduser().resolve()
+    out_root = (args.out or (gamebot_home() / "captures" / "sets")).expanduser().resolve()
     out_root.mkdir(parents=True, exist_ok=True)
     cal = _load_cal()  # optional meta only — not used for projection pose
     session = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")

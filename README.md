@@ -31,7 +31,7 @@ cd ../gamebot-vision
 On the Pi (same `--zoom` as play; default **1.2×** center crop):
 
 ```bash
-./scripts/run-pi.sh python -m gamebot.capture_sets           # → ~/.gamebot/captures/sets
+./scripts/run-pi.sh python -m gamebot.capture_sets           # → /home/<user>/.gamebot/captures/sets (even under sudo)
 ./scripts/run-pi.sh python -m gamebot.capture_sets --n 10
 ./scripts/run-pi.sh python -m gamebot.capture_sets --n 0,0,10
 # Enter=shoot, number=override, s=next phase, q=quit
