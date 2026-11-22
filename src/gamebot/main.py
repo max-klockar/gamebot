@@ -137,8 +137,11 @@ class App:
                 )
                 self._verify_frames += 1
                 if self._verify_frames > 90:  # ~3s at 30fps-ish
-                    self.phase = HostPhase.IDENTIFY
                     self._verify_frames = 0
+                    if self.config.quick_start_elo is not None:
+                        self._start_chess_quick()
+                    else:
+                        self.phase = HostPhase.IDENTIFY
             else:
                 active = self.dwell._state.zone_id
                 progress = self.dwell.progress()
@@ -172,15 +175,12 @@ class App:
                 if splash_frames > 15:
                     splash_frames = 0
                     self.led.set_mode(LedMode.IDLE)
-                    if self.config.quick_start_elo is not None:
-                        chess = next((p for p in self.plugins if p.id == "chess"), None)
-                        if chess is None:
-                            print("quick start: chess plugin missing")
-                            self.phase = HostPhase.IDENTIFY
+                    # --elo only skips projected menus, not calibration.
+                    if self.config.skip_calibrate:
+                        if self.config.quick_start_elo is not None:
+                            self._start_chess_quick()
                         else:
-                            self._start_plugin(chess)
-                    elif self.config.skip_calibrate:
-                        self.phase = HostPhase.IDENTIFY
+                            self.phase = HostPhase.IDENTIFY
                     else:
                         self.phase = HostPhase.CALIBRATE
                         self._cal_frames = 0
@@ -229,7 +229,10 @@ class App:
             print("auto calibrate failed — keeping previous / mock calibration")
             if self.calibration is None:
                 self.calibration = self.calibrator.mock_calibrate()
-            self.phase = HostPhase.IDENTIFY
+            if self.config.quick_start_elo is not None:
+                self._start_chess_quick()
+            else:
+                self.phase = HostPhase.IDENTIFY
             return
         self.calibration = result.calibration
         assert self.config.calibration_path is not None
@@ -255,6 +258,14 @@ class App:
         else:
             self.candidates = matches if matches else list(self.plugins)
             self.phase = HostPhase.CHOOSE
+
+    def _start_chess_quick(self) -> None:
+        chess = next((p for p in self.plugins if p.id == "chess"), None)
+        if chess is None:
+            print("quick start: chess plugin missing")
+            self.phase = HostPhase.IDENTIFY
+            return
+        self._start_plugin(chess)
 
     def _start_plugin(self, plugin: GamePlugin) -> None:
         runtime = RuntimeHandles(
@@ -397,7 +408,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--elo",
         type=int,
         default=None,
-        help="Skip menus/calibrate; start chess as Guest at roughly this strength (e.g. 500)",
+        help="Skip projected menus; start chess as Guest at roughly this strength (e.g. 500). Still calibrates unless --skip-cal.",
     )
     p.add_argument(
         "--skip-cal",

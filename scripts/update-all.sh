@@ -88,6 +88,7 @@ if [[ -n "$PLUGIN" ]]; then
 fi
 echo "done. example:"
 echo "  ./scripts/run-pi.sh --camera picam --projector hdmi --elo 500"
+echo "  # --elo skips menus only; still calibrates unless --skip-cal; waits for starting setup"
 echo "  ./scripts/run-pi.sh python -m gamebot.capture_frames"
 echo "  ./scripts/run-pi.sh python -m gamebot.capture_sets"
 echo "  ./scripts/run-pi.sh python -m gamebot.piece_detect_demo"
