@@ -72,6 +72,19 @@ def _wood_fill(poly_px: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     return out
 
 
+def draw_projected_board_border(
+    frame: np.ndarray,
+    layout: TableLayout,
+    H: np.ndarray,
+    *,
+    color: tuple[int, int, int] = (0, 220, 140),
+    thickness: int = 4,
+) -> None:
+    """Outline only — align physical board without lighting squares for vision."""
+    border = warp_points(layout.board_corners(), H).astype(np.int32)
+    cv2.polylines(frame, [border], True, color, thickness)
+
+
 def draw_projected_chessboard(frame: np.ndarray, layout: TableLayout, H: np.ndarray) -> None:
     """Filled 8x8: light squares white-ish, dark squares dark green."""
     ox, oy = layout.board_origin
@@ -85,8 +98,7 @@ def draw_projected_chessboard(frame: np.ndarray, layout: TableLayout, H: np.ndar
             pts = warp_points(quad, H).astype(np.int32)
             color = light if (r + c) % 2 == 0 else dark
             cv2.fillPoly(frame, [pts], color)
-    border = warp_points(layout.board_corners(), H).astype(np.int32)
-    cv2.polylines(frame, [border], True, (0, 220, 140), 4)
+    draw_projected_board_border(frame, layout, H)
 
 
 def _blit_marker(frame: np.ndarray, marker_gray: np.ndarray, dest_quad_px: np.ndarray) -> None:

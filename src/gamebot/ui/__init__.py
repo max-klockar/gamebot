@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from gamebot.geometry import TableLayout, warp_points
-from gamebot.table_surface import draw_projected_chessboard, draw_virtual_table
+from gamebot.table_surface import draw_projected_board_border, draw_projected_chessboard, draw_virtual_table
 
 
 @dataclass
@@ -93,6 +93,8 @@ class Scene:
         # False during play: leave board area black so camera piece/move vision
         # matches black-projection training (no projected chess grid on pieces).
         self.project_chessboard: bool = True
+        # Outline of the playing field (no filled squares) — useful while aligning.
+        self.project_board_border: bool = False
 
     def clear(self) -> None:
         self.zones.clear()
@@ -163,6 +165,8 @@ class UIRenderer:
         elif scene.project_chessboard:
             # Filled 8×8 for menus / identify. Play scenes leave this black.
             draw_projected_chessboard(frame, self.layout, self.H)
+        elif scene.project_board_border:
+            draw_projected_board_border(frame, self.layout, self.H)
 
         for prim in scene.prims:
             if prim.kind == "button":
