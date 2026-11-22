@@ -77,6 +77,15 @@ COLOR_CORNERS: list[tuple[str, tuple[int, int, int], list[tuple[tuple[int, int, 
     ),
 ]
 
+# Bright fills for lit−dark when the default corner colour is too dim (e.g. blue on wood).
+# Tried in order on refine / sequential retries. Names are for logs only.
+DOT_FILL_PALETTE: list[tuple[str, tuple[int, int, int]]] = [
+    ("white", (255, 255, 255)),
+    ("yellow", (0, 255, 255)),
+    ("cyan", (255, 255, 0)),
+    ("magenta", (255, 0, 255)),
+]
+
 
 def make_grid_pattern(
     size: tuple[int, int],
@@ -362,6 +371,24 @@ def _detect_dot_near(
     return (lit_pt[0] + x0, lit_pt[1] + y0)
 
 
+def _resolve_projected_dot(
+    dark_bgr: np.ndarray,
+    lit_bgr: np.ndarray,
+    colour_index: int,
+) -> tuple[float, float] | None:
+    """lit−dark, then bright-peak motion, then hue for that corner colour."""
+    pt = detect_dot_by_difference(dark_bgr, lit_bgr)
+    if pt is not None:
+        return pt
+    lit_pt = detect_bright_dot(lit_bgr)
+    dark_pt = detect_bright_dot(dark_bgr)
+    if lit_pt is not None and (
+        dark_pt is None or float(np.linalg.norm(np.array(lit_pt) - np.array(dark_pt))) > 25.0
+    ):
+        return lit_pt
+    return detect_color_corners_partial(lit_bgr)[colour_index]
+
+
 def capture_corners_sequential(
     projector_size: tuple[int, int],
     proj_pts: np.ndarray,
@@ -370,35 +397,45 @@ def capture_corners_sequential(
 ) -> np.ndarray | None:
     """Show one colour at a time; locate each via lit−dark difference (not room lights).
 
+    If the default corner colour is invisible, retry the same projector point with
+    ``DOT_FILL_PALETTE`` (white/yellow/…) — correspondence is by sequence order.
+
     ``show_and_grab_frame(bgr_image) -> camera_bgr``.
     """
     w, h = projector_size
     black = np.zeros((h, w, 3), dtype=np.uint8)
     cam_pts: list[tuple[float, float]] = []
     for i, ((label, bgr, _), (x, y)) in enumerate(zip(COLOR_CORNERS, proj_pts)):
-        dark = None
-        for _ in range(settle):
-            dark = show_and_grab_frame(black)
-        assert dark is not None
-        img = render_single_color_dot(
-            projector_size, (float(x), float(y)), bgr, label, status=f"capture {label} ({i + 1}/4)"
-        )
-        lit = None
-        for _ in range(settle):
-            lit = show_and_grab_frame(img)
-        assert lit is not None
-        pt = detect_dot_by_difference(dark, lit)
-        if pt is None:
-            # Fallback: bright peak on lit frame, but still must move vs dark.
-            lit_pt = detect_bright_dot(lit)
-            dark_pt = detect_bright_dot(dark)
-            if lit_pt is not None and (
-                dark_pt is None or float(np.linalg.norm(np.array(lit_pt) - np.array(dark_pt))) > 25.0
-            ):
-                pt = lit_pt
-        if pt is None:
-            partial = detect_color_corners_partial(lit)
-            pt = partial[i]
+        fills: list[tuple[str, tuple[int, int, int] | None]] = [("default", None)]
+        fills.extend(DOT_FILL_PALETTE)
+        pt: tuple[float, float] | None = None
+        for fill_name, fill_bgr in fills:
+            dark = None
+            for _ in range(settle):
+                dark = show_and_grab_frame(black)
+            assert dark is not None
+            status = f"capture {label} ({i + 1}/4)"
+            if fill_name != "default":
+                status += f" [{fill_name}]"
+            img = render_single_color_dot(
+                projector_size,
+                (float(x), float(y)),
+                bgr,
+                label,
+                status=status,
+                radius=14 if fill_name == "default" else 18,
+                fill_bgr=fill_bgr,
+            )
+            lit = None
+            for _ in range(settle):
+                lit = show_and_grab_frame(img)
+            assert lit is not None
+            pt = _resolve_projected_dot(dark, lit, i)
+            if pt is not None:
+                if fill_name != "default":
+                    print(f"sequential {label}: ok with {fill_name} fill")
+                break
+            print(f"sequential {label}: miss with {fill_name} — trying next palette")
         if pt is None:
             print(f"sequential capture missed {label}")
             return None
@@ -713,8 +750,9 @@ def refine_with_board_corner_projections(
     """Project dots onto estimated board corners, measure lit−dark, re-solve projector map.
 
     Fixes residual skew when colour-dot H_cam_to_proj was slightly off (wide lens / angle).
-    Uses bright white fills (order known) and a camera ROI around each chessboard corner
-    so a dim colour (esp. blue TR) cannot fail the whole refine.
+    Uses bright palette fills (order known) and a camera ROI around each chessboard
+    corner so a dim colour (esp. blue TR) cannot fail the whole refine. On miss,
+    escalate size and cycle ``DOT_FILL_PALETTE``.
     """
     table = layout.board_corners()
     # Sit small dots on corner squares, not the outer rim.
@@ -736,17 +774,20 @@ def refine_with_board_corner_projections(
     )
     roi_radius = max(70.0, board_span * 0.28)
     cam_seen: list[tuple[float, float]] = []
-    print("refine: projecting corner-square dots (white + ROI)…")
-    # radius / settle / min_peak — escalate if a corner is hard to see
-    attempts = (
-        (14, settle, 18.0),
-        (20, settle + 2, 14.0),
-        (26, settle + 3, 10.0),
-    )
+    print("refine: corner dots (ROI + palette fallback)…")
+    # (radius, settle, min_peak, palette_index) — escalate size and cycle fills
+    attempts: list[tuple[int, int, float, int]] = []
+    for ai, (radius, extra_settle, min_peak) in enumerate(
+        ((14, 0, 18.0), (18, 1, 16.0), (22, 2, 14.0), (26, 3, 10.0))
+    ):
+        attempts.append((radius, settle + extra_settle, min_peak, ai % len(DOT_FILL_PALETTE)))
     for i, ((label, bgr, _), (px, py)) in enumerate(zip(COLOR_CORNERS, proj_pts)):
         expect = (float(board_inset[i, 0]), float(board_inset[i, 1]))
         pt: tuple[float, float] | None = None
-        for attempt, (radius, n_settle, min_peak) in enumerate(attempts, start=1):
+        used_fill = "white"
+        for attempt, (radius, n_settle, min_peak, pal_i) in enumerate(attempts, start=1):
+            fill_name, fill_bgr = DOT_FILL_PALETTE[pal_i]
+            used_fill = fill_name
             dark = None
             for _ in range(n_settle):
                 dark = show_frame(black)
@@ -756,9 +797,9 @@ def refine_with_board_corner_projections(
                 (float(px), float(py)),
                 bgr,
                 label,
-                status=f"refine {label} ({i + 1}/4)" + (f" retry {attempt}" if attempt > 1 else ""),
+                status=f"refine {label} ({i + 1}/4) [{fill_name}]",
                 radius=radius,
-                fill_bgr=(255, 255, 255),
+                fill_bgr=fill_bgr,
             )
             lit = None
             for _ in range(n_settle):
@@ -766,15 +807,18 @@ def refine_with_board_corner_projections(
             assert lit is not None
             pt = _detect_dot_near(dark, lit, expect, roi_radius=roi_radius, min_peak=min_peak)
             if pt is not None:
+                if attempt > 1:
+                    print(f"refine {label}: ok on attempt {attempt} with {fill_name}")
                 break
-            print(f"refine {label}: attempt {attempt} miss — retrying brighter/larger")
+            print(f"refine {label}: miss [{fill_name}] — next palette/size")
         if pt is None:
-            print(f"refine missed {label} after {len(attempts)} attempts")
+            print(f"refine missed {label} after {len(attempts)} palette/size attempts")
             return None
         err = float(np.linalg.norm(np.array(pt) - board_inset[i]))
         print(
             f"refine {label}: cam_seen=({pt[0]:.0f},{pt[1]:.0f}) "
-            f"board=({board_inset[i, 0]:.0f},{board_inset[i, 1]:.0f}) err≈{err:.0f}px"
+            f"board=({board_inset[i, 0]:.0f},{board_inset[i, 1]:.0f}) "
+            f"err≈{err:.0f}px [{used_fill}]"
         )
         cam_seen.append(pt)
     cam_seen_arr = np.array(cam_seen, dtype=np.float64)
