@@ -546,6 +546,7 @@ def detect_chessboard_outer_corners(
     frame_bgr: np.ndarray,
     *,
     prefer_full: bool = True,
+    verbose: bool = True,
 ) -> np.ndarray | None:
     """Outer board quad (TL,TR,BR,BL). Prefers full 7x7 (empty board), then center bands."""
     gray0 = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
@@ -571,7 +572,8 @@ def detect_chessboard_outer_corners(
             # Partial patterns must land on a plausible board-sized quad in-frame.
             min_area = (w * h) * 0.02
             if quad_looks_sane(outer, (w, h), min_area=min_area, min_edge=min(w, h) * 0.08):
-                print(f"chessboard locked pattern={cols}x{rows} inner corners")
+                if verbose:
+                    print(f"chessboard locked pattern={cols}x{rows} inner corners")
                 return order_quad_tl_tr_br_bl(outer)
     return None
 

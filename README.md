@@ -13,6 +13,16 @@ After calibrate, plugins run `identify()`. One match starts that game; zero or m
 
 ## Chess vision (pieces + board)
 
+**Runtime board lock:** YOLO AABB (`board.pt`, else `board_pose.pt`) + classical
+corner refine (chessboard corners → wood contour → Hough). Chess setup runs this
+before corner-piece colour detect so the playing-field quad is grid-accurate.
+
+```bash
+pip install -e ".[vision]"   # ultralytics for YOLO AABB
+python -m gamebot.board_detect_demo path/to/still.jpg
+# on Pi: ./scripts/run-pi.sh python -m gamebot.board_detect_demo --camera
+```
+
 **Training** (LabelMe, YOLO, datasets) lives in laptop repo `gamebot-vision`.
 Stills are **not** kept in this git tree:
 
@@ -24,7 +34,8 @@ Stills are **not** kept in this git tree:
 cd ../gamebot-vision
 ./scripts/pull-captures.sh max@gamebot --purge
 ./scripts/label.sh captures/sets/02_board_blackproj
-./scripts/train-board-pose.sh                # physical board corners (preferred)
+./scripts/train-board.sh                     # AABB finder
+./scripts/train-board-pose.sh                # optional; AABB fallback only
 ./scripts/train-pieces.sh                    # skips chessproj
 ./scripts/export-weights.sh ../gamebot
 ```
@@ -33,12 +44,12 @@ On the Pi (same `--zoom` as play; default **1.2×** center crop).
 `run-pi.sh` is root for LEDs but captures land in `/home/<user>/.gamebot/` via `SUDO_USER`:
 
 ```bash
-./scripts/run-pi.sh python -m gamebot.capture_sets --n 0,20,0   # phase 2 only (pose data)
+./scripts/run-pi.sh python -m gamebot.capture_sets --n 0,20,0   # phase 2 only
 ./scripts/run-pi.sh python -m gamebot.capture_sets --n 10
 # Enter=shoot, number=override, s=next phase, q=quit
 ```
 
-Weights in `models/vision/`: `board_pose.pt` (4 corners), `board.pt` (AABB backup), `pieces.pt`.
+Weights in `models/vision/`: `board.pt` (AABB), `board_pose.pt` (AABB fallback), `pieces.pt`.
 
 ## License
 

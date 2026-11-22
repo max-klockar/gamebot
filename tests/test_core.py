@@ -232,6 +232,29 @@ def test_chessboard_center_with_start_pieces() -> None:
     assert ordered[2, 0] > size - 30 and ordered[2, 1] > size - 30
 
 
+def test_refine_board_quad_inside_aabb() -> None:
+    """YOLO-style padded AABB + classical refine recovers outer corners."""
+    from gamebot.board_detect import refine_board_quad
+
+    size = 500
+    margin = 50
+    board = 400
+    img = np.full((size, size, 3), (200, 180, 40), dtype=np.uint8)  # bluish table
+    sq = board // 8
+    for r in range(8):
+        for c in range(8):
+            color = 220 if (r + c) % 2 == 0 else 40
+            y0, x0 = margin + r * sq, margin + c * sq
+            img[y0 : y0 + sq, x0 : x0 + sq] = color
+    aabb = (margin - 20, margin - 20, margin + board + 20, margin + board + 20)
+    refined = refine_board_quad(img, aabb)
+    assert refined is not None
+    quad, method = refined
+    assert method == "chessboard"
+    assert quad[0, 0] < margin + 15 and quad[0, 1] < margin + 15
+    assert quad[2, 0] > margin + board - 15 and quad[2, 1] > margin + board - 15
+
+
 def test_led_modes() -> None:
     led = LedRing(backend=MockLedBackend(), enabled=True)
     led.set_mode(LedMode.IDLE)
