@@ -119,6 +119,16 @@ class App:
         splash_frames = 0
         while not self._stop_requested:
             frame = self.camera.read()
+            # Tick BEFORE building the scene so vision board-lock updates the
+            # projected border on this same frame (otherwise outline looks stuck).
+            if self.phase == HostPhase.PLAYING and self.session is not None:
+                self.session.tick(frame)
+                if self.session.wants_exit():
+                    self.ambient.stop()
+                    self.led.set_mode(LedMode.IDLE)
+                    self.session = None
+                    self.phase = HostPhase.IDENTIFY
+
             scene = self._build_scene()
 
             if self.phase == HostPhase.CALIBRATE:
@@ -189,13 +199,6 @@ class App:
                 self._run_identify(frame)
             elif self.phase == HostPhase.CHOOSE:
                 self.led.set_mode(LedMode.IDLE)
-            elif self.phase == HostPhase.PLAYING and self.session is not None:
-                self.session.tick(frame)
-                if self.session.wants_exit():
-                    self.ambient.stop()
-                    self.led.set_mode(LedMode.IDLE)
-                    self.session = None
-                    self.phase = HostPhase.IDENTIFY
 
         return 0
 

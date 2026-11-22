@@ -63,56 +63,79 @@ def _onnx_session(weights: Path):
     return _ONNX_SESSION
 
 
-def yolo_board_aabb_onnx(
-    weights: Path,
+def _onnx_pred_aabb(
+    sess,
     frame_bgr: np.ndarray,
     *,
-    conf: float = 0.12,
-    pad_frac: float = 0.12,
-    imgsz: int = 640,
-) -> tuple[int, int, int, int] | None:
-    """YOLOv8 detect ONNX → padded AABB. Output layout (1, 4+nc, N)."""
-    sess = _onnx_session(weights)
+    conf: float,
+    pad_frac: float,
+    imgsz: int,
+    swap_rb: bool,
+) -> tuple[tuple[int, int, int, int] | None, float]:
+    """Run one ONNX forward. Returns (aabb_or_None, max_conf)."""
     lb, r, left, top = _letterbox(frame_bgr, imgsz)
-    blob = lb[:, :, ::-1].transpose(2, 0, 1)[None].astype(np.float32) / 255.0
-    inp = sess.get_inputs()[0].name
-    pred = sess.run(None, {inp: blob})[0][0]  # (5, N) for 1-class board
+    rgb = lb[:, :, ::-1] if swap_rb else lb
+    blob = rgb.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+    pred = sess.run(None, {sess.get_inputs()[0].name: blob})[0][0]
     if pred.ndim != 2 or pred.shape[0] < 5:
-        return None
+        return None, 0.0
     scores = pred[4]
+    max_conf = float(scores.max()) if scores.size else 0.0
     mask = scores >= conf
     if not np.any(mask):
-        return None
+        return None, max_conf
     boxes = pred[:4, mask].T
-    scores = scores[mask]
+    scores_m = scores[mask]
     cx, cy, bw, bh = boxes.T
-    x1 = cx - bw / 2
-    y1 = cy - bh / 2
-    w = bw
-    h = bh
-    # map letterbox → original
-    x1 = (x1 - left) / r
-    y1 = (y1 - top) / r
-    w = w / r
-    h = h / r
+    x1 = (cx - bw / 2 - left) / r
+    y1 = (cy - bh / 2 - top) / r
+    w = bw / r
+    h = bh / r
     idxs = cv2.dnn.NMSBoxes(
         bboxes=np.stack([x1, y1, w, h], axis=1).tolist(),
-        scores=scores.tolist(),
+        scores=scores_m.tolist(),
         score_threshold=conf,
         nms_threshold=0.45,
     )
     if idxs is None or len(idxs) == 0:
-        return None
+        return None, max_conf
     i = int(np.array(idxs).reshape(-1)[0])
     xa, ya, wa, ha = float(x1[i]), float(y1[i]), float(w[i]), float(h[i])
     pad_x, pad_y = wa * pad_frac, ha * pad_frac
     fh, fw = frame_bgr.shape[:2]
-    return (
+    aabb = (
         max(0, int(xa - pad_x)),
         max(0, int(ya - pad_y)),
         min(fw, int(xa + wa + pad_x)),
         min(fh, int(ya + ha + pad_y)),
     )
+    return aabb, max_conf
+
+
+def yolo_board_aabb_onnx(
+    weights: Path,
+    frame_bgr: np.ndarray,
+    *,
+    conf: float = 0.08,
+    pad_frac: float = 0.12,
+    imgsz: int = 640,
+) -> tuple[int, int, int, int] | None:
+    """YOLOv8 detect ONNX → padded AABB. Tries BGR→RGB and raw (Picamera quirks)."""
+    sess = _onnx_session(weights)
+    best: tuple[int, int, int, int] | None = None
+    best_conf = -1.0
+    for swap in (True, False):
+        aabb, max_c = _onnx_pred_aabb(
+            sess, frame_bgr, conf=conf, pad_frac=pad_frac, imgsz=imgsz, swap_rb=swap
+        )
+        if max_c > best_conf:
+            best_conf = max_c
+        if aabb is not None:
+            return aabb
+        best = best or aabb
+    if best_conf < conf:
+        print(f"board onnx: no det (maxconf={best_conf:.3f}, need>={conf})")
+    return best
 
 
 def yolo_board_aabb_ultralytics(
