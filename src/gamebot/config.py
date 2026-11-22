@@ -5,12 +5,14 @@ from pathlib import Path
 
 import numpy as np
 
+from gamebot.paths import gamebot_home
+
 
 @dataclass
 class AppConfig:
     """Runtime configuration for laptop mock or Pi bring-up."""
 
-    data_dir: Path = field(default_factory=lambda: Path.home() / ".gamebot")
+    data_dir: Path = field(default_factory=gamebot_home)
     db_path: Path | None = None
     calibration_path: Path | None = None
     camera: str = "mock"  # mock | picam | file

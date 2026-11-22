@@ -132,16 +132,18 @@ def render_color_corner_pattern(
     size: tuple[int, int],
     points: np.ndarray | None = None,
     status: str = "auto calibrate",
+    *,
+    radius: int = 14,
 ) -> np.ndarray:
-    """Black frame + 4 saturated coloured dots (and labels)."""
+    """Black frame + 4 small coloured dots (and labels)."""
     w, h = size
     pts = default_projector_quad(size) if points is None else points
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     for i, ((label, bgr, _), (x, y)) in enumerate(zip(COLOR_CORNERS, pts)):
         pt = (int(x), int(y))
-        cv2.circle(frame, pt, 34, bgr, -1)
-        cv2.circle(frame, pt, 38, (255, 255, 255), 2)
-        cv2.putText(frame, label, (pt[0] + 40, pt[1] + 8), cv2.FONT_HERSHEY_SIMPLEX, 1.0, bgr, 2)
+        cv2.circle(frame, pt, radius, bgr, -1)
+        cv2.circle(frame, pt, radius + 3, (255, 255, 255), 2)
+        cv2.putText(frame, label, (pt[0] + radius + 8, pt[1] + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, bgr, 2)
     cv2.putText(frame, status, (40, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (220, 220, 220), 2)
     return frame
 
@@ -288,14 +290,16 @@ def render_single_color_dot(
     bgr: tuple[int, int, int],
     label: str,
     status: str = "",
+    *,
+    radius: int = 12,
 ) -> np.ndarray:
-    """One coloured dot only — for sequential capture (avoids blow-out confusion)."""
+    """One small coloured dot — stays on a board square instead of spilling off the rim."""
     w, h = size
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     pt = (int(point[0]), int(point[1]))
-    cv2.circle(frame, pt, 40, bgr, -1)
-    cv2.circle(frame, pt, 46, (255, 255, 255), 3)
-    cv2.putText(frame, label, (pt[0] + 50, pt[1] + 10), cv2.FONT_HERSHEY_SIMPLEX, 1.2, bgr, 2)
+    cv2.circle(frame, pt, radius, bgr, -1)
+    cv2.circle(frame, pt, radius + 3, (255, 255, 255), 2)
+    cv2.putText(frame, label, (pt[0] + radius + 8, pt[1] + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.8, bgr, 2)
     if status:
         cv2.putText(frame, status, (40, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (220, 220, 220), 2)
     return frame
@@ -654,8 +658,8 @@ def refine_with_board_corner_projections(
     Fixes residual skew when colour-dot H_cam_to_proj was slightly off (wide lens / angle).
     """
     table = layout.board_corners()
-    # Sit dots on corner squares, not the outer rim.
-    inset = 0.06
+    # Sit small dots on corner squares, not the outer rim.
+    inset = 0.10
     t_center = table.mean(axis=0)
     table_inset = table + (t_center - table) * inset
     b_center = board_cam.mean(axis=0)
@@ -825,18 +829,76 @@ class Calibrator:
         )
 
     def auto_calibrate_with_search(self, show_and_grab, show_frame) -> AutoCalibrateResult | None:
-        """Search colour dots, full chessboard, then corner-projection refine."""
-        found = search_visible_color_quad(self.projector_size, show_and_grab, show_frame)
-        if found is None:
-            return None
-        proj_pts, color_cam, _frame = found
+        """Board-first cal: find chessboard → seed H with small dots → 4-dot board corners → verify grid.
+
+        Large colour blobs that hang off the wood rim are avoided; corner dots are small
+        and aimed at the playing-field corners once the board is known.
+        """
         w, h = self.projector_size
         black = np.zeros((h, w, 3), dtype=np.uint8)
-        print("projector black — detecting full chessboard (pieces off helps)…")
+
+        print("projector black — detecting chessboard (pieces off helps)…")
         board_frame = None
         for _ in range(5):
             board_frame = show_frame(black)
         assert board_frame is not None
+        board_cam = detect_chessboard_outer_corners(board_frame, prefer_full=True, verbose=True)
+
+        if board_cam is not None:
+            board_cam = order_quad_tl_tr_br_bl(board_cam)
+            fh, fw = board_frame.shape[:2]
+            if not quad_looks_sane(board_cam, (fw, fh), min_area=(fw * fh) * 0.02, min_edge=min(fw, fh) * 0.08):
+                print("chessboard quad not sane — falling back to colour search")
+                board_cam = None
+
+        if board_cam is not None:
+            # 1) Seed camera↔projector with a tight centred 4-dot (small dots).
+            seed_pts = default_projector_quad(self.projector_size)  # scale 0.32
+            print("board found — seeding H with small centre dots…")
+
+            def _grab(img: np.ndarray) -> np.ndarray:
+                return show_frame(img)
+
+            color_cam = capture_corners_sequential(self.projector_size, seed_pts, _grab, settle=3)
+            if color_cam is None:
+                print("seed dots missed — falling back to colour search")
+            else:
+                rough = self.auto_calibrate(
+                    board_frame, proj_pts=seed_pts, color_cam=color_cam, board_frame_bgr=board_frame
+                )
+                if rough is None or not rough.used_chessboard:
+                    print("board+seed solve failed — falling back to colour search")
+                else:
+                    # 2) 4-dot the board corners (inset), re-solve, then verify grid lines.
+                    refined = refine_with_board_corner_projections(
+                        self.projector_size,
+                        self.layout,
+                        rough.calibration,
+                        rough.calibration.board_corners_camera,
+                        show_frame,
+                    )
+                    cal = refined if refined is not None else rough.calibration
+                    if refined is None:
+                        print("corner 4-dot refine skipped — keeping seed solve")
+                    else:
+                        print("corner 4-dot refine applied")
+                    verify = render_verify_overlay(self.projector_size, cal, self.layout)
+                    return AutoCalibrateResult(
+                        calibration=cal,
+                        camera_debug_bgr=annotate_camera_debug(board_frame, color_cam, cal.board_corners_camera),
+                        verify_projector_bgr=verify,
+                        used_chessboard=True,
+                        message="ok: board → small seed dots → corner 4-dot + verify grid",
+                    )
+
+        # Fallback: old colour-quad search (no board / seed failed).
+        print("auto calibrate: colour-quad search fallback…")
+        found = search_visible_color_quad(self.projector_size, show_and_grab, show_frame)
+        if found is None:
+            return None
+        proj_pts, color_cam, _frame = found
+        for _ in range(3):
+            board_frame = show_frame(black)
         result = self.auto_calibrate(
             board_frame, proj_pts=proj_pts, color_cam=color_cam, board_frame_bgr=board_frame
         )

@@ -142,8 +142,13 @@ class App:
                     proj = pattern
             elif self.phase == HostPhase.VERIFY:
                 assert self.calibration is not None
-                proj = self._verify_frame or render_verify_overlay(
-                    self.config.projector_size, self.calibration, self.layout
+                # np.ndarray is truthy-ambiguous — never use `arr or …`
+                proj = (
+                    self._verify_frame
+                    if self._verify_frame is not None
+                    else render_verify_overlay(
+                        self.config.projector_size, self.calibration, self.layout
+                    )
                 )
                 self._verify_frames += 1
                 if self._verify_frames > 90:  # ~3s at 30fps-ish
@@ -226,7 +231,7 @@ class App:
             self.projector.poll_key(25)
             return self.camera.read()
 
-        print("auto calibrate: searching colour corners…")
+        print("auto calibrate: board-first (chessboard → small corner dots → verify grid)…")
         result = self.calibrator.auto_calibrate_with_search(show_and_grab, show_frame)
         if result is None:
             print("auto calibrate failed — keeping previous / mock calibration")
