@@ -22,20 +22,23 @@ Stills are **not** kept in this git tree:
 ```bash
 # on laptop
 cd ../gamebot-vision
-./scripts/pull-captures.sh max@gamebot          # then optional --purge
-./scripts/label.sh --new-only
-./scripts/train-board.sh && ./scripts/train-pieces.sh
+./scripts/pull-captures.sh max@gamebot --purge
+./scripts/label.sh captures/sets/02_board_blackproj
+./scripts/train-board-pose.sh                # physical board corners (preferred)
+./scripts/train-pieces.sh                    # skips chessproj
 ./scripts/export-weights.sh ../gamebot
 ```
 
-On the Pi (same `--zoom` as play; default **1.2×** center crop):
+On the Pi (same `--zoom` as play; default **1.2×** center crop).
+`run-pi.sh` is root for LEDs but captures land in `/home/<user>/.gamebot/` via `SUDO_USER`:
 
 ```bash
-./scripts/run-pi.sh python -m gamebot.capture_sets           # → /home/<user>/.gamebot/captures/sets (even under sudo)
+./scripts/run-pi.sh python -m gamebot.capture_sets --n 0,20,0   # phase 2 only (pose data)
 ./scripts/run-pi.sh python -m gamebot.capture_sets --n 10
-./scripts/run-pi.sh python -m gamebot.capture_sets --n 0,0,10
 # Enter=shoot, number=override, s=next phase, q=quit
 ```
+
+Weights in `models/vision/`: `board_pose.pt` (4 corners), `board.pt` (AABB backup), `pieces.pt`.
 
 ## License
 
