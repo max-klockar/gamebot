@@ -133,8 +133,6 @@ def yolo_board_aabb_onnx(
         if aabb is not None:
             return aabb
         best = best or aabb
-    if best_conf < conf:
-        print(f"board onnx: no det (maxconf={best_conf:.3f}, need>={conf})")
     return best
 
 
@@ -216,6 +214,10 @@ def refine_wood_contour(crop_bgr: np.ndarray) -> np.ndarray | None:
         quad = cv2.boxPoints(cv2.minAreaRect(cnt)).astype(np.float64)
     ordered = order_quad_tl_tr_br_bl(quad)
     if not quad_looks_sane(ordered, (w, h), min_area=0.12 * w * h, min_edge=min(w, h) * 0.2):
+        return None
+    # Reject tall/skinny masks (table edge, projected strip) — board is ~square.
+    edges = [float(np.linalg.norm(ordered[(i + 1) % 4] - ordered[i])) for i in range(4)]
+    if max(edges) / max(min(edges), 1e-6) > 1.55:
         return None
     c = ordered.mean(axis=0)
     return ordered + (c - ordered) * 0.035
@@ -301,6 +303,8 @@ def refine_hough_lines(crop_bgr: np.ndarray) -> np.ndarray | None:
 def refine_board_quad(
     frame_bgr: np.ndarray,
     aabb: tuple[int, int, int, int],
+    *,
+    allow_wood: bool = True,
 ) -> tuple[np.ndarray, str] | None:
     x0, y0, x1, y1 = aabb
     crop = frame_bgr[y0:y1, x0:x1]
@@ -308,12 +312,20 @@ def refine_board_quad(
         return None
     offset = np.array([x0, y0], dtype=np.float64)
 
-    cb = detect_chessboard_outer_corners(crop, verbose=False)
+    try:
+        cb = detect_chessboard_outer_corners(crop, verbose=False)
+    except Exception:
+        cb = None
     if cb is not None:
         return cb + offset, "chessboard"
 
+    if not allow_wood:
+        return None
     for name, fn in (("wood_contour", refine_wood_contour), ("hough", refine_hough_lines)):
-        local = fn(crop)
+        try:
+            local = fn(crop)
+        except Exception:
+            local = None
         if local is not None:
             return local + offset, name
     return None
@@ -323,25 +335,29 @@ def detect_physical_board_quad(
     frame_bgr: np.ndarray,
     *,
     weights_dir: Path | None = None,
-    conf: float = 0.12,
+    conf: float = 0.05,
     pad_frac: float = 0.12,
+    allow_wood: bool = False,
 ) -> BoardQuadResult | None:
-    """ONNX/YOLO AABB → classical refine. Falls back to full-frame chessboard."""
+    """ONNX/YOLO AABB → classical refine. Falls back to full-frame chessboard.
+
+    `allow_wood=False` by default — wood_contour flaps badly under projection.
+    """
     weights_dir = Path(weights_dir) if weights_dir is not None else default_weights_dir()
     aabb = yolo_board_aabb(frame_bgr, weights_dir=weights_dir, conf=conf, pad_frac=pad_frac)
 
     if aabb is not None:
-        refined = refine_board_quad(frame_bgr, aabb)
+        refined = refine_board_quad(frame_bgr, aabb, allow_wood=allow_wood)
         if refined is not None:
             quad, method = refined
             return BoardQuadResult(quad=quad, method=method, aabb=aabb)
-        x0, y0, x1, y1 = aabb
-        quad = order_quad_tl_tr_br_bl(
-            np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64)
-        )
-        return BoardQuadResult(quad=quad, method="aabb_fallback", aabb=aabb)
+        # Don't return raw AABB — it's axis-aligned and looks like a "stuck square".
+        # Fall through to full-frame chessboard.
 
-    full = detect_chessboard_outer_corners(frame_bgr, verbose=False)
+    try:
+        full = detect_chessboard_outer_corners(frame_bgr, verbose=False)
+    except Exception:
+        full = None
     if full is None:
         return None
     h, w = frame_bgr.shape[:2]

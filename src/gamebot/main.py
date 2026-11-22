@@ -65,7 +65,7 @@ class App:
         self._verify_frames = 0
         self._verify_frame: np.ndarray | None = None
         self._table_check_counter = 0
-        self._last_virtual_table: bool | None = None
+        self._last_virtual_table: bool | None = False if config.virtual_table == "never" else None
         self._virtual_table_latched = config.virtual_table == "always"
         self._stop_requested = False
 
@@ -375,11 +375,12 @@ class App:
         if want != self._last_virtual_table:
             self.renderer.project_virtual_table = want
             self._last_virtual_table = want
-            print(
-                "virtual table: ON (no physical table/board — projecting wood+board+ChArUco)"
-                if want
-                else "virtual table: OFF (physical surface detected)"
-            )
+            if mode != "never":
+                print(
+                    "virtual table: ON (no physical table/board — projecting wood+board+ChArUco)"
+                    if want
+                    else "virtual table: OFF (physical surface detected)"
+                )
 
     def _draw_led_debug(self, frame: np.ndarray) -> None:
         if not self.config.debug_overlay:

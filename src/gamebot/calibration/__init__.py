@@ -485,14 +485,24 @@ _CHESSBOARD_PATTERNS: tuple[tuple[int, int], ...] = (
 )
 
 
-def _refine_corners(gray: np.ndarray, corners: np.ndarray) -> np.ndarray:
-    return cv2.cornerSubPix(
-        gray,
-        corners,
-        (5, 5),
-        (-1, -1),
-        (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01),
-    )
+def _refine_corners(gray: np.ndarray, corners: np.ndarray) -> np.ndarray | None:
+    """Sub-pixel refine; returns None if any seed is outside the image (OpenCV throws)."""
+    h, w = gray.shape[:2]
+    pts = np.asarray(corners, dtype=np.float32).reshape(-1, 1, 2)
+    if np.any(pts[:, 0, 0] < 0) or np.any(pts[:, 0, 0] > w - 1):
+        return None
+    if np.any(pts[:, 0, 1] < 0) or np.any(pts[:, 0, 1] > h - 1):
+        return None
+    try:
+        return cv2.cornerSubPix(
+            gray,
+            pts,
+            (5, 5),
+            (-1, -1),
+            (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01),
+        )
+    except cv2.error:
+        return None
 
 
 def _find_chessboard_corners(gray: np.ndarray, pattern: tuple[int, int]) -> np.ndarray | None:
@@ -566,8 +576,10 @@ def detect_chessboard_outer_corners(
             corners = _find_chessboard_corners(gray, pattern)
             if corners is None:
                 continue
-            corners = _refine_corners(gray0, corners)
-            grid = corners.reshape(rows, cols, 2)
+            refined = _refine_corners(gray0, corners)
+            if refined is None:
+                continue
+            grid = refined.reshape(rows, cols, 2)
             outer = _outer_from_inner_grid(grid)
             # Partial patterns must land on a plausible board-sized quad in-frame.
             min_area = (w * h) * 0.02
