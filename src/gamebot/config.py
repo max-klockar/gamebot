@@ -35,8 +35,10 @@ class AppConfig:
     skip_calibrate: bool = False
     quick_start_elo: int | None = None
     ambient_sound: bool = False
-    # auto = project virtual table only when camera sees no physical table/board
-    virtual_table: str = "auto"  # auto | always | never
+    # never = physical table only (default). auto = project virtual wood when
+    # camera sees no table; always = force virtual. Auto's on→off flash confuses
+    # board vision during bring-up, so keep it opt-in.
+    virtual_table: str = "never"  # auto | always | never
 
     def __post_init__(self) -> None:
         self.data_dir = Path(self.data_dir)

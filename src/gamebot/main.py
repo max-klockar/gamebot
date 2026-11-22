@@ -432,8 +432,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--virtual-table",
         choices=["auto", "always", "never"],
-        default="auto",
-        help="Project a wood table+board+ChArUco when no physical table is seen (default auto)",
+        default="never",
+        help="Virtual wood table when no physical table (default never; auto flashes on→off and confuses board vision)",
     )
     p.add_argument(
         "--zoom",
@@ -456,10 +456,10 @@ def main(argv: list[str] | None = None) -> None:
         camera_file=args.camera_file,
         engine_path=args.engine,
         debug_overlay=not args.no_debug,
-        skip_calibrate=bool(args.skip_cal or args.elo is not None),
+        skip_calibrate=bool(args.skip_cal),  # --elo must NOT imply skip-cal
         quick_start_elo=args.elo,
         ambient_sound=bool(args.ambient),
-        virtual_table=args.virtual_table,
+        virtual_table=args.virtual_table or "never",
     )
     if args.led is not None:
         kwargs["led_backend"] = args.led
