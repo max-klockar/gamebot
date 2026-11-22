@@ -26,6 +26,9 @@ class RuntimeHandles:
     layout: TableLayout
     thinking: object  # callable(bool) — LED thinking pulse
     config: object
+    camera: object | None = None
+    calibration: object | None = None
+    renderer: object | None = None
 
 
 @runtime_checkable

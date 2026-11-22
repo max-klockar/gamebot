@@ -273,10 +273,10 @@ class App:
             layout=self.layout,
             thinking=self.led.thinking,
             config=self.config,
+            camera=self.camera,
+            calibration=self.calibration,
+            renderer=self.renderer,
         )
-        runtime.camera = self.camera  # type: ignore[attr-defined]
-        runtime.calibration = self.calibration  # type: ignore[attr-defined]
-        runtime.renderer = self.renderer  # type: ignore[attr-defined]
         self.session = plugin.create_session(runtime)
         self.session.on_enter()
         self.phase = HostPhase.PLAYING

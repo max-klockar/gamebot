@@ -111,6 +111,17 @@ class Scene:
     def add_text(self, text: str, x: float, y: float, color: tuple[int, int, int] = (255, 255, 255)) -> None:
         self.prims.append(DrawPrim("text", {"text": text, "xy": (x, y), "color": color}))
 
+    def add_poly_px(
+        self,
+        points_px: np.ndarray,
+        color: tuple[int, int, int] = (0, 220, 140),
+        thickness: int = 4,
+    ) -> None:
+        """Closed polygon already in projector pixels (bypasses table homography)."""
+        self.prims.append(
+            DrawPrim("poly_px", {"points": np.asarray(points_px, dtype=np.float64), "color": color, "thickness": thickness})
+        )
+
     def add_icon(self, label: str, x: float, y: float, color: tuple[int, int, int] = (255, 220, 0)) -> None:
         self.prims.append(DrawPrim("icon", {"label": label, "xy": (x, y), "color": color}))
 
@@ -179,6 +190,15 @@ class UIRenderer:
                 self._draw_text(frame, prim.data)
             elif prim.kind == "icon":
                 self._draw_icon(frame, prim.data)
+            elif prim.kind == "poly_px":
+                pts = np.asarray(prim.data["points"], dtype=np.int32).reshape(-1, 1, 2)
+                cv2.polylines(
+                    frame,
+                    [pts],
+                    True,
+                    prim.data.get("color", (0, 220, 140)),
+                    int(prim.data.get("thickness", 4)),
+                )
 
         if scene.title:
             cv2.putText(frame, scene.title, (40, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (240, 240, 240), 2)
