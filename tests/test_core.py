@@ -211,6 +211,20 @@ def test_difference_dot_ignores_static_lamp() -> None:
     assert not quad_looks_sane(np.array([[10, 10], [12, 10], [11, 11], [10, 40]], dtype=np.float64))
 
 
+def test_difference_dot_roi_picks_near_expected() -> None:
+    """Refine knows the board corner — ROI must ignore a brighter blob elsewhere."""
+    dark = np.zeros((240, 320, 3), dtype=np.uint8)
+    lit = dark.copy()
+    cv2.circle(lit, (40, 40), 22, (255, 255, 255), -1)  # bright distractor
+    cv2.circle(lit, (200, 150), 10, (255, 60, 0), -1)  # dim blue near board corner
+    global_pt = detect_dot_by_difference(dark, lit)
+    assert global_pt is not None
+    assert abs(global_pt[0] - 40) < 15  # distractor wins globally
+    roi_pt = detect_dot_by_difference(dark, lit, roi_center=(200, 150), roi_radius=50)
+    assert roi_pt is not None
+    assert abs(roi_pt[0] - 200) < 8 and abs(roi_pt[1] - 150) < 8
+
+
 def test_chessboard_center_with_start_pieces() -> None:
     """Empty middle ranks (start position) should still yield an outer board quad."""
     size = 400

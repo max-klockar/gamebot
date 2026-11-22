@@ -200,11 +200,24 @@ def detect_dot_by_difference(
     lit_bgr: np.ndarray,
     min_area: float = 40.0,
     min_peak: float = 25.0,
+    *,
+    roi_center: tuple[float, float] | None = None,
+    roi_radius: float | None = None,
 ) -> tuple[float, float] | None:
-    """Locate a projected dot as the lit−dark peak (ignores lamps/chairs that stay on)."""
+    """Locate a projected dot as the lit−dark peak (ignores lamps/chairs that stay on).
+
+    When ``roi_center`` is set (refine knows the chessboard corner), search only near
+    that camera point so a dim/blue blob is not lost to noise elsewhere in the frame.
+    """
     dark = cv2.cvtColor(dark_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
     lit = cv2.cvtColor(lit_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
     diff = cv2.GaussianBlur(np.clip(lit - dark, 0, 255), (11, 11), 0)
+    if roi_center is not None:
+        h, w = diff.shape
+        r = float(roi_radius if roi_radius is not None else min(w, h) * 0.12)
+        yy, xx = np.ogrid[:h, :w]
+        cx, cy = float(roi_center[0]), float(roi_center[1])
+        diff = np.where((xx - cx) ** 2 + (yy - cy) ** 2 <= r * r, diff, 0.0)
     peak = float(diff.max())
     if peak < min_peak:
         return None
@@ -292,17 +305,61 @@ def render_single_color_dot(
     status: str = "",
     *,
     radius: int = 12,
+    fill_bgr: tuple[int, int, int] | None = None,
 ) -> np.ndarray:
-    """One small coloured dot — stays on a board square instead of spilling off the rim."""
+    """One small coloured dot — stays on a board square instead of spilling off the rim.
+
+    ``fill_bgr`` overrides the fill (use white during corner refine — blue is too dim
+    on wood for lit−dark). Colour ring + label still show which corner.
+    """
     w, h = size
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     pt = (int(point[0]), int(point[1]))
-    cv2.circle(frame, pt, radius, bgr, -1)
-    cv2.circle(frame, pt, radius + 3, (255, 255, 255), 2)
+    fill = fill_bgr if fill_bgr is not None else bgr
+    cv2.circle(frame, pt, radius, fill, -1)
+    cv2.circle(frame, pt, radius + 3, bgr, 2)
     cv2.putText(frame, label, (pt[0] + radius + 8, pt[1] + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.8, bgr, 2)
     if status:
         cv2.putText(frame, status, (40, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (220, 220, 220), 2)
     return frame
+
+
+def _detect_dot_near(
+    dark_bgr: np.ndarray,
+    lit_bgr: np.ndarray,
+    expect_cam: tuple[float, float],
+    *,
+    roi_radius: float,
+    min_peak: float = 18.0,
+) -> tuple[float, float] | None:
+    """Find a projected dot near an expected camera point (refine / known corner)."""
+    pt = detect_dot_by_difference(
+        dark_bgr,
+        lit_bgr,
+        min_area=25.0,
+        min_peak=min_peak,
+        roi_center=expect_cam,
+        roi_radius=roi_radius,
+    )
+    if pt is not None:
+        return pt
+    # Bright peak inside the same ROI (overexposed white fill).
+    h, w = lit_bgr.shape[:2]
+    r = int(max(20.0, roi_radius))
+    cx, cy = int(expect_cam[0]), int(expect_cam[1])
+    x0, x1 = max(0, cx - r), min(w, cx + r)
+    y0, y1 = max(0, cy - r), min(h, cy + r)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    crop_lit = lit_bgr[y0:y1, x0:x1]
+    crop_dark = dark_bgr[y0:y1, x0:x1]
+    lit_pt = detect_bright_dot(crop_lit, min_area=20.0)
+    if lit_pt is None:
+        return None
+    dark_pt = detect_bright_dot(crop_dark, min_area=20.0)
+    if dark_pt is not None and float(np.linalg.norm(np.array(lit_pt) - np.array(dark_pt))) < 15.0:
+        return None
+    return (lit_pt[0] + x0, lit_pt[1] + y0)
 
 
 def capture_corners_sequential(
@@ -656,6 +713,8 @@ def refine_with_board_corner_projections(
     """Project dots onto estimated board corners, measure lit−dark, re-solve projector map.
 
     Fixes residual skew when colour-dot H_cam_to_proj was slightly off (wide lens / angle).
+    Uses bright white fills (order known) and a camera ROI around each chessboard corner
+    so a dim colour (esp. blue TR) cannot fail the whole refine.
     """
     table = layout.board_corners()
     # Sit small dots on corner squares, not the outer rim.
@@ -668,23 +727,49 @@ def refine_with_board_corner_projections(
 
     w, h = projector_size
     black = np.zeros((h, w, 3), dtype=np.uint8)
-    cam_seen: list[tuple[float, float]] = []
-    print("refine: projecting corner-square dots…")
-    for i, ((label, bgr, _), (px, py)) in enumerate(zip(COLOR_CORNERS, proj_pts)):
-        dark = None
-        for _ in range(settle):
-            dark = show_frame(black)
-        assert dark is not None
-        img = render_single_color_dot(
-            projector_size, (float(px), float(py)), bgr, label, status=f"refine {label} ({i + 1}/4)"
+    # ROI scales with board size; TL was ~18px off on Pi — keep margin for worse H.
+    board_span = float(
+        max(
+            np.linalg.norm(board_cam[0] - board_cam[1]),
+            np.linalg.norm(board_cam[0] - board_cam[3]),
         )
-        lit = None
-        for _ in range(settle):
-            lit = show_frame(img)
-        assert lit is not None
-        pt = detect_dot_by_difference(dark, lit)
+    )
+    roi_radius = max(70.0, board_span * 0.28)
+    cam_seen: list[tuple[float, float]] = []
+    print("refine: projecting corner-square dots (white + ROI)…")
+    # radius / settle / min_peak — escalate if a corner is hard to see
+    attempts = (
+        (14, settle, 18.0),
+        (20, settle + 2, 14.0),
+        (26, settle + 3, 10.0),
+    )
+    for i, ((label, bgr, _), (px, py)) in enumerate(zip(COLOR_CORNERS, proj_pts)):
+        expect = (float(board_inset[i, 0]), float(board_inset[i, 1]))
+        pt: tuple[float, float] | None = None
+        for attempt, (radius, n_settle, min_peak) in enumerate(attempts, start=1):
+            dark = None
+            for _ in range(n_settle):
+                dark = show_frame(black)
+            assert dark is not None
+            img = render_single_color_dot(
+                projector_size,
+                (float(px), float(py)),
+                bgr,
+                label,
+                status=f"refine {label} ({i + 1}/4)" + (f" retry {attempt}" if attempt > 1 else ""),
+                radius=radius,
+                fill_bgr=(255, 255, 255),
+            )
+            lit = None
+            for _ in range(n_settle):
+                lit = show_frame(img)
+            assert lit is not None
+            pt = _detect_dot_near(dark, lit, expect, roi_radius=roi_radius, min_peak=min_peak)
+            if pt is not None:
+                break
+            print(f"refine {label}: attempt {attempt} miss — retrying brighter/larger")
         if pt is None:
-            print(f"refine missed {label}")
+            print(f"refine missed {label} after {len(attempts)} attempts")
             return None
         err = float(np.linalg.norm(np.array(pt) - board_inset[i]))
         print(
@@ -839,10 +924,16 @@ class Calibrator:
 
         print("projector black — detecting chessboard (pieces off helps)…")
         board_frame = None
-        for _ in range(5):
+        board_cam = None
+        for _ in range(10):
             board_frame = show_frame(black)
-        assert board_frame is not None
-        board_cam = detect_chessboard_outer_corners(board_frame, prefer_full=True, verbose=True)
+            assert board_frame is not None
+            board_cam = detect_chessboard_outer_corners(board_frame, prefer_full=True, verbose=True)
+            if board_cam is not None:
+                print("chessboard found on black (board-first path)")
+                break
+        if board_cam is None:
+            print("no chessboard on black — will try colour search fallback")
 
         if board_cam is not None:
             board_cam = order_quad_tl_tr_br_bl(board_cam)
