@@ -13,12 +13,12 @@ After calibrate, plugins run `identify()`. One match starts that game; zero or m
 
 ## Chess vision (pieces + board)
 
-**Runtime board lock:** YOLO AABB (`board.pt`, else `board_pose.pt`) + classical
-corner refine (chessboard corners → wood contour → Hough). Chess setup runs this
-before corner-piece colour detect so the playing-field quad is grid-accurate.
+**Runtime board lock:** YOLO AABB (`board.onnx` via onnxruntime) + classical
+corner refine (chessboard corners → wood contour → Hough). **Do not**
+`pip install ultralytics` on the Pi — it pulls Torch/CUDA and fills the card.
 
 ```bash
-pip install -e ".[vision]"   # ultralytics for YOLO AABB
+pip install -e ".[vision]"   # onnxruntime only (~tens of MB)
 python -m gamebot.board_detect_demo path/to/still.jpg
 # on Pi: ./scripts/run-pi.sh python -m gamebot.board_detect_demo --camera
 ```
@@ -49,7 +49,7 @@ On the Pi (same `--zoom` as play; default **1.2×** center crop).
 # Enter=shoot, number=override, s=next phase, q=quit
 ```
 
-Weights in `models/vision/`: `board.pt` (AABB), `board_pose.pt` (AABB fallback), `pieces.pt`.
+Weights in `models/vision/`: `board.onnx` (Pi AABB), `board.pt` / `pieces.pt` (laptop train).
 
 ## License
 

@@ -1,8 +1,7 @@
-"""Physical board quad: YOLO AABB (optional) + classical corner refine.
+"""Physical board quad: YOLO AABB (ONNX) + classical corner refine.
 
-Preferred runtime path for wooden boards under blank projection. YOLO finds the
-board; OpenCV chessboard corners (then wood-contour / Hough) snap the playing
-field to TL,TR,BR,BL for homography.
+Pi-friendly: uses `board.onnx` + onnxruntime (no Torch / Ultralytics).
+Laptop may still fall back to `board.pt` via ultralytics if ONNX is missing.
 """
 
 from __future__ import annotations
@@ -17,6 +16,9 @@ import numpy as np
 from gamebot.calibration import detect_chessboard_outer_corners, order_quad_tl_tr_br_bl, quad_looks_sane
 from gamebot.paths import gamebot_home
 
+_ONNX_SESSION = None
+_ONNX_PATH: Path | None = None
+
 
 @dataclass(frozen=True)
 class BoardQuadResult:
@@ -29,32 +31,100 @@ def default_weights_dir() -> Path:
     env = os.environ.get("GAMEBOT_VISION_WEIGHTS")
     if env:
         return Path(env).expanduser()
-    # Editable checkout: gamebot/src/gamebot/board_detect.py → repo/models/vision
     repo = Path(__file__).resolve().parents[2]
     cand = repo / "models" / "vision"
-    if (cand / "board.pt").exists() or (cand / "board_pose.pt").exists():
+    if any((cand / n).exists() for n in ("board.onnx", "board.pt", "board_pose.pt")):
         return cand
     return gamebot_home() / "models" / "vision"
 
 
-def _load_yolo(weights: Path):
-    try:
-        from ultralytics import YOLO
-    except ImportError as exc:
-        raise ImportError(
-            "ultralytics required for YOLO board detect — pip install 'gamebot[vision]'"
-        ) from exc
-    return YOLO(str(weights))
+def _letterbox(im: np.ndarray, new_shape: int = 640, color=(114, 114, 114)):
+    h, w = im.shape[:2]
+    r = min(new_shape / h, new_shape / w)
+    nh, nw = int(round(h * r)), int(round(w * r))
+    dw, dh = new_shape - nw, new_shape - nh
+    left = int(round(dw / 2 - 0.1))
+    top = int(round(dh / 2 - 0.1))
+    resized = cv2.resize(im, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    out = np.full((new_shape, new_shape, 3), color, dtype=np.uint8)
+    out[top : top + nh, left : left + nw] = resized
+    return out, r, left, top
 
 
-def yolo_board_aabb(
-    model,
+def _onnx_session(weights: Path):
+    global _ONNX_SESSION, _ONNX_PATH
+    weights = weights.resolve()
+    if _ONNX_SESSION is not None and _ONNX_PATH == weights:
+        return _ONNX_SESSION
+    import onnxruntime as ort
+
+    _ONNX_SESSION = ort.InferenceSession(str(weights), providers=["CPUExecutionProvider"])
+    _ONNX_PATH = weights
+    return _ONNX_SESSION
+
+
+def yolo_board_aabb_onnx(
+    weights: Path,
+    frame_bgr: np.ndarray,
+    *,
+    conf: float = 0.12,
+    pad_frac: float = 0.12,
+    imgsz: int = 640,
+) -> tuple[int, int, int, int] | None:
+    """YOLOv8 detect ONNX → padded AABB. Output layout (1, 4+nc, N)."""
+    sess = _onnx_session(weights)
+    lb, r, left, top = _letterbox(frame_bgr, imgsz)
+    blob = lb[:, :, ::-1].transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+    inp = sess.get_inputs()[0].name
+    pred = sess.run(None, {inp: blob})[0][0]  # (5, N) for 1-class board
+    if pred.ndim != 2 or pred.shape[0] < 5:
+        return None
+    scores = pred[4]
+    mask = scores >= conf
+    if not np.any(mask):
+        return None
+    boxes = pred[:4, mask].T
+    scores = scores[mask]
+    cx, cy, bw, bh = boxes.T
+    x1 = cx - bw / 2
+    y1 = cy - bh / 2
+    w = bw
+    h = bh
+    # map letterbox → original
+    x1 = (x1 - left) / r
+    y1 = (y1 - top) / r
+    w = w / r
+    h = h / r
+    idxs = cv2.dnn.NMSBoxes(
+        bboxes=np.stack([x1, y1, w, h], axis=1).tolist(),
+        scores=scores.tolist(),
+        score_threshold=conf,
+        nms_threshold=0.45,
+    )
+    if idxs is None or len(idxs) == 0:
+        return None
+    i = int(np.array(idxs).reshape(-1)[0])
+    xa, ya, wa, ha = float(x1[i]), float(y1[i]), float(w[i]), float(h[i])
+    pad_x, pad_y = wa * pad_frac, ha * pad_frac
+    fh, fw = frame_bgr.shape[:2]
+    return (
+        max(0, int(xa - pad_x)),
+        max(0, int(ya - pad_y)),
+        min(fw, int(xa + wa + pad_x)),
+        min(fh, int(ya + ha + pad_y)),
+    )
+
+
+def yolo_board_aabb_ultralytics(
+    weights: Path,
     frame_bgr: np.ndarray,
     *,
     conf: float = 0.25,
     pad_frac: float = 0.12,
 ) -> tuple[int, int, int, int] | None:
-    res = model.predict(frame_bgr, conf=conf, verbose=False)[0]
+    from ultralytics import YOLO
+
+    res = YOLO(str(weights)).predict(frame_bgr, conf=conf, verbose=False)[0]
     if res.boxes is None or len(res.boxes) == 0:
         return None
     bi = int(res.boxes.conf.cpu().numpy().argmax())
@@ -68,6 +138,36 @@ def yolo_board_aabb(
         min(w, int(x2 + pad_x)),
         min(h, int(y2 + pad_y)),
     )
+
+
+def yolo_board_aabb(
+    frame_bgr: np.ndarray,
+    *,
+    weights_dir: Path,
+    conf: float = 0.12,
+    pad_frac: float = 0.12,
+) -> tuple[int, int, int, int] | None:
+    """Prefer board.onnx (Pi); optional .pt via ultralytics on laptop."""
+    onnx = weights_dir / "board.onnx"
+    if onnx.exists():
+        try:
+            return yolo_board_aabb_onnx(onnx, frame_bgr, conf=conf, pad_frac=pad_frac)
+        except ImportError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            print(f"board onnx failed ({exc}); trying .pt / classical")
+    for name in ("board.pt", "board_pose.pt"):
+        pt = weights_dir / name
+        if not pt.exists():
+            continue
+        try:
+            return yolo_board_aabb_ultralytics(pt, frame_bgr, conf=max(conf, 0.2), pad_frac=pad_frac)
+        except ImportError:
+            break
+        except Exception as exc:  # noqa: BLE001
+            print(f"board pt failed ({exc})")
+            break
+    return None
 
 
 def refine_wood_contour(crop_bgr: np.ndarray) -> np.ndarray | None:
@@ -94,7 +194,6 @@ def refine_wood_contour(crop_bgr: np.ndarray) -> np.ndarray | None:
     ordered = order_quad_tl_tr_br_bl(quad)
     if not quad_looks_sane(ordered, (w, h), min_area=0.12 * w * h, min_edge=min(w, h) * 0.2):
         return None
-    # Wood rim → playing field (labels target the 8×8).
     c = ordered.mean(axis=0)
     return ordered + (c - ordered) * 0.035
 
@@ -201,23 +300,12 @@ def detect_physical_board_quad(
     frame_bgr: np.ndarray,
     *,
     weights_dir: Path | None = None,
-    conf: float = 0.25,
+    conf: float = 0.12,
     pad_frac: float = 0.12,
 ) -> BoardQuadResult | None:
-    """YOLO board/pose AABB → classical refine. Falls back to full-frame chessboard."""
+    """ONNX/YOLO AABB → classical refine. Falls back to full-frame chessboard."""
     weights_dir = Path(weights_dir) if weights_dir is not None else default_weights_dir()
-    aabb: tuple[int, int, int, int] | None = None
-    for name in ("board.pt", "board_pose.pt"):
-        wp = weights_dir / name
-        if not wp.exists():
-            continue
-        try:
-            model = _load_yolo(wp)
-        except ImportError:
-            break
-        aabb = yolo_board_aabb(model, frame_bgr, conf=conf, pad_frac=pad_frac)
-        if aabb is not None:
-            break
+    aabb = yolo_board_aabb(frame_bgr, weights_dir=weights_dir, conf=conf, pad_frac=pad_frac)
 
     if aabb is not None:
         refined = refine_board_quad(frame_bgr, aabb)
@@ -230,7 +318,6 @@ def detect_physical_board_quad(
         )
         return BoardQuadResult(quad=quad, method="aabb_fallback", aabb=aabb)
 
-    # No YOLO: try classical on the full frame
     full = detect_chessboard_outer_corners(frame_bgr, verbose=False)
     if full is None:
         return None

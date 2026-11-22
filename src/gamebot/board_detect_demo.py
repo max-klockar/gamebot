@@ -57,7 +57,7 @@ def main() -> None:
         raise SystemExit("pass an image path or --camera")
 
     weights = args.weights or default_weights_dir()
-    print(f"weights: {weights}")
+    print(f"weights: {weights} (prefer board.onnx + onnxruntime on Pi)")
     result = detect_physical_board_quad(frame, weights_dir=weights)
     if result is None:
         print("no board")

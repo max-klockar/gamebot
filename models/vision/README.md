@@ -2,16 +2,17 @@
 
 Exported from the laptop [`gamebot-vision`](../../gamebot-vision) repo:
 
-- `board.pt` — AABB playing-field detector (ROI for classical corner refine)
-- `board_pose.pt` — pose model; used only as AABB fallback if `board.pt` misses
-- `pieces.pt` — white/black piece detector
+- `board.onnx` — **Pi runtime** board AABB (onnxruntime; ~12 MB)
+- `board.pt` — train / re-export source (do **not** install Ultralytics on the Pi)
+- `board_pose.pt` — optional; keypoints alone are not grid-accurate
+- `pieces.pt` — white/black piece detector (future ONNX export)
 
-**Runtime:** YOLO finds the board box → OpenCV chessboard / contour refine snaps
-the 4 playing-field corners (see `gamebot.board_detect`). Pose keypoints alone
-are not precise enough for the 8×8 grid.
+**Runtime:** ONNX finds the board box → OpenCV chessboard / contour refine snaps
+the 4 playing-field corners (`gamebot.board_detect`).
 
 Refresh from laptop:
 
 ```bash
 cd ../gamebot-vision && ./scripts/export-weights.sh ../gamebot
+# also writes board.onnx from board.pt when ultralytics is available
 ```
