@@ -77,14 +77,16 @@ COLOR_CORNERS: list[tuple[str, tuple[int, int, int], list[tuple[tuple[int, int, 
     ),
 ]
 
-# Bright fills for lit−dark when the default corner colour is too dim (e.g. blue on wood).
-# Tried in order on refine / sequential retries. Names are for logs only.
+# Bright fills for lit−dark. Green first — very visible on blue cloth (outside-board dots).
 DOT_FILL_PALETTE: list[tuple[str, tuple[int, int, int]]] = [
+    ("green", (0, 255, 0)),
     ("white", (255, 255, 255)),
     ("yellow", (0, 255, 255)),
     ("cyan", (255, 255, 0)),
-    ("magenta", (255, 0, 255)),
 ]
+
+# Primary fill for board-first seed + outside-cloth refine.
+CAL_DOT_GREEN: tuple[int, int, int] = (0, 255, 0)
 
 
 def make_grid_pattern(
@@ -236,6 +238,43 @@ def detect_dot_by_difference(
     return _largest_blob_center(mask, min_area=min_area)
 
 
+def quad_bbox_aspect(pts: np.ndarray) -> float:
+    """Axis-aligned bbox aspect (≥1). Chessboard projections should stay near ~1."""
+    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
+    w = float(pts[:, 0].max() - pts[:, 0].min())
+    h = float(pts[:, 1].max() - pts[:, 1].min())
+    short = max(min(w, h), 1.0)
+    return max(w, h) / short
+
+
+def expand_quad_from_center(quad: np.ndarray, scale: float) -> np.ndarray:
+    """Push TL,TR,BR,BL away from centroid (scale>1 → outside the quad)."""
+    q = np.asarray(quad, dtype=np.float64).reshape(4, 2)
+    c = q.mean(axis=0)
+    return c + (q - c) * float(scale)
+
+
+def outside_board_table_mm(layout: TableLayout, offset_mm: float | None = None) -> np.ndarray:
+    """Four table-mm points just outside the board corners (on the cloth)."""
+    table = layout.board_corners()
+    off = float(offset_mm if offset_mm is not None else layout.square_mm * 0.7)
+    c = table.mean(axis=0)
+    out = []
+    for p in table:
+        d = p - c
+        n = float(np.linalg.norm(d))
+        out.append(p + (d / n) * off if n > 1e-6 else p)
+    return np.array(out, dtype=np.float64)
+
+
+def cam_roi_from_quad(quad: np.ndarray, margin: float = 0.55) -> tuple[tuple[float, float], float]:
+    """Centre + radius covering an expanded board quad (seed search window)."""
+    q = np.asarray(quad, dtype=np.float64).reshape(4, 2)
+    c = q.mean(axis=0)
+    r = float(np.linalg.norm(q - c, axis=1).max()) * (1.0 + float(margin))
+    return (float(c[0]), float(c[1])), max(r, 80.0)
+
+
 def quad_looks_sane(
     pts: np.ndarray,
     image_size: tuple[int, int] | None = None,
@@ -243,8 +282,9 @@ def quad_looks_sane(
     min_area: float = 8000.0,
     min_edge: float = 40.0,
     max_out_frac: float = 0.08,
+    max_aspect: float = 2.4,
 ) -> bool:
-    """Reject collapsed / crossed / off-image quads that blow up homographies."""
+    """Reject collapsed / crossed / off-image / sword-shaped quads that blow up H."""
     pts = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
     if len(pts) != 4 or not np.isfinite(pts).all():
         return False
@@ -262,6 +302,9 @@ def quad_looks_sane(
     d1 = float(np.linalg.norm(ordered[0] - ordered[2]))
     d2 = float(np.linalg.norm(ordered[1] - ordered[3]))
     if min(d1, d2) < 1e-3 or max(d1, d2) / min(d1, d2) > 2.8:
+        return False
+    # Bounding-box aspect — kills the “sword” (e.g. 96×642) from bad H.
+    if quad_bbox_aspect(ordered) > max_aspect:
         return False
     if image_size is not None:
         w, h = image_size
@@ -375,8 +418,19 @@ def _resolve_projected_dot(
     dark_bgr: np.ndarray,
     lit_bgr: np.ndarray,
     colour_index: int,
+    *,
+    roi_center: tuple[float, float] | None = None,
+    roi_radius: float | None = None,
 ) -> tuple[float, float] | None:
-    """lit−dark, then bright-peak motion, then hue for that corner colour."""
+    """lit−dark (ROI if given), then bright-peak / hue — never whole-frame when ROI set."""
+    if roi_center is not None:
+        return _detect_dot_near(
+            dark_bgr,
+            lit_bgr,
+            roi_center,
+            roi_radius=float(roi_radius if roi_radius is not None else 120.0),
+            min_peak=16.0,
+        )
     pt = detect_dot_by_difference(dark_bgr, lit_bgr)
     if pt is not None:
         return pt
@@ -394,20 +448,26 @@ def capture_corners_sequential(
     proj_pts: np.ndarray,
     show_and_grab_frame,
     settle: int = 3,
+    *,
+    roi_center: tuple[float, float] | None = None,
+    roi_radius: float | None = None,
+    prefer_green: bool = False,
 ) -> np.ndarray | None:
-    """Show one colour at a time; locate each via lit−dark difference (not room lights).
+    """Show one dot at a time; locate via lit−dark (not room lights).
 
-    If the default corner colour is invisible, retry the same projector point with
-    ``DOT_FILL_PALETTE`` (white/yellow/…) — correspondence is by sequence order.
-
-    ``show_and_grab_frame(bgr_image) -> camera_bgr``.
+    When ``roi_center`` is set (board known), ignore bright junk outside that window —
+    that was the “sword” failure mode. ``prefer_green`` skips dim default blues and
+    starts with bright green (best on blue cloth).
     """
     w, h = projector_size
     black = np.zeros((h, w, 3), dtype=np.uint8)
     cam_pts: list[tuple[float, float]] = []
+    fills: list[tuple[str, tuple[int, int, int] | None]]
+    if prefer_green:
+        fills = list(DOT_FILL_PALETTE)  # green first
+    else:
+        fills = [("default", None), *DOT_FILL_PALETTE[:3]]
     for i, ((label, bgr, _), (x, y)) in enumerate(zip(COLOR_CORNERS, proj_pts)):
-        fills: list[tuple[str, tuple[int, int, int] | None]] = [("default", None)]
-        fills.extend(DOT_FILL_PALETTE)
         pt: tuple[float, float] | None = None
         for fill_name, fill_bgr in fills:
             dark = None
@@ -420,26 +480,27 @@ def capture_corners_sequential(
             img = render_single_color_dot(
                 projector_size,
                 (float(x), float(y)),
-                bgr,
+                bgr if fill_bgr is None else fill_bgr,
                 label,
                 status=status,
-                radius=14 if fill_name == "default" else 18,
-                fill_bgr=fill_bgr,
+                radius=16 if prefer_green else (14 if fill_name == "default" else 18),
+                fill_bgr=fill_bgr if fill_bgr is not None else (CAL_DOT_GREEN if prefer_green else None),
             )
             lit = None
             for _ in range(settle):
                 lit = show_and_grab_frame(img)
             assert lit is not None
-            pt = _resolve_projected_dot(dark, lit, i)
+            pt = _resolve_projected_dot(
+                dark, lit, i, roi_center=roi_center, roi_radius=roi_radius
+            )
             if pt is not None:
-                if fill_name != "default":
+                if fill_name not in ("default", "green") or (prefer_green and fill_name != "green"):
                     print(f"sequential {label}: ok with {fill_name} fill")
                 break
-            print(f"sequential {label}: miss with {fill_name} — trying next palette")
+            print(f"sequential {label}: miss with {fill_name} — trying next")
         if pt is None:
             print(f"sequential capture missed {label}")
             return None
-        # Reject latching onto the same blob twice.
         for prev in cam_pts:
             if float(np.linalg.norm(np.array(pt) - np.array(prev))) < 30.0:
                 print(f"sequential {label} too close to previous point — rejecting")
@@ -447,9 +508,11 @@ def capture_corners_sequential(
         print(f"sequential {label} @ camera ({pt[0]:.0f},{pt[1]:.0f})")
         cam_pts.append(pt)
     cam = np.array(cam_pts, dtype=np.float64)
-    # Camera size unknown here; geometric checks without image bounds.
-    if not quad_looks_sane(cam, min_area=4000.0, min_edge=35.0):
-        print("sequential quad looks collapsed/crossed — rejecting")
+    if not quad_looks_sane(cam, min_area=4000.0, min_edge=35.0, max_aspect=2.4):
+        print(
+            f"sequential quad looks collapsed/crossed/sword "
+            f"(aspect≈{quad_bbox_aspect(cam):.1f}) — rejecting"
+        )
         return None
     return cam
 
@@ -739,7 +802,7 @@ def render_verify_overlay(size: tuple[int, int], cal: CalibrationData, layout: T
     return frame
 
 
-def refine_with_board_corner_projections(
+def refine_with_outside_green_dots(
     projector_size: tuple[int, int],
     layout: TableLayout,
     cal: CalibrationData,
@@ -747,47 +810,36 @@ def refine_with_board_corner_projections(
     show_frame,
     settle: int = 3,
 ) -> CalibrationData | None:
-    """Project dots onto estimated board corners, measure lit−dark, re-solve projector map.
+    """Project bright green dots just *outside* the board on the cloth, re-solve H.
 
-    Fixes residual skew when colour-dot H_cam_to_proj was slightly off (wide lens / angle).
-    Uses bright palette fills (order known) and a camera ROI around each chessboard
-    corner so a dim colour (esp. blue TR) cannot fail the whole refine. On miss,
-    escalate size and cycle ``DOT_FILL_PALETTE``.
+    Cloth contrast beats wood; table-mm offsets keep geometry tied to the chessboard.
     """
     table = layout.board_corners()
-    # Sit small dots on corner squares, not the outer rim.
-    inset = 0.10
-    t_center = table.mean(axis=0)
-    table_inset = table + (t_center - table) * inset
-    b_center = board_cam.mean(axis=0)
-    board_inset = board_cam + (b_center - board_cam) * inset
-    proj_pts = warp_points(table_inset, cal.H_table_to_projector)
-
+    table_out = outside_board_table_mm(layout)
+    # Expected camera landing from current board pose (same plane expand).
+    board_out = expand_quad_from_center(board_cam, 1.0 + (0.7 * layout.square_mm) / max(layout.board_size_mm / 2, 1.0))
+    # Prefer projector aim from current H (dots on cloth beside corners).
+    proj_pts = warp_points(table_out, cal.H_table_to_projector)
     w, h = projector_size
+    # Keep projector points inside the frame with a small margin.
+    proj_pts[:, 0] = np.clip(proj_pts[:, 0], 30, w - 30)
+    proj_pts[:, 1] = np.clip(proj_pts[:, 1], 30, h - 30)
+
     black = np.zeros((h, w, 3), dtype=np.uint8)
-    # ROI scales with board size; TL was ~18px off on Pi — keep margin for worse H.
     board_span = float(
         max(
             np.linalg.norm(board_cam[0] - board_cam[1]),
             np.linalg.norm(board_cam[0] - board_cam[3]),
         )
     )
-    roi_radius = max(70.0, board_span * 0.28)
+    roi_radius = max(80.0, board_span * 0.35)
     cam_seen: list[tuple[float, float]] = []
-    print("refine: corner dots (ROI + palette fallback)…")
-    # (radius, settle, min_peak, palette_index) — escalate size and cycle fills
-    attempts: list[tuple[int, int, float, int]] = []
-    for ai, (radius, extra_settle, min_peak) in enumerate(
-        ((14, 0, 18.0), (18, 1, 16.0), (22, 2, 14.0), (26, 3, 10.0))
-    ):
-        attempts.append((radius, settle + extra_settle, min_peak, ai % len(DOT_FILL_PALETTE)))
-    for i, ((label, bgr, _), (px, py)) in enumerate(zip(COLOR_CORNERS, proj_pts)):
-        expect = (float(board_inset[i, 0]), float(board_inset[i, 1]))
+    print("refine: bright green dots outside board on cloth…")
+    attempts = ((18, settle, 16.0), (24, settle + 2, 12.0), (30, settle + 3, 10.0))
+    for i, ((label, _bgr, _), (px, py)) in enumerate(zip(COLOR_CORNERS, proj_pts)):
+        expect = (float(board_out[i, 0]), float(board_out[i, 1]))
         pt: tuple[float, float] | None = None
-        used_fill = "white"
-        for attempt, (radius, n_settle, min_peak, pal_i) in enumerate(attempts, start=1):
-            fill_name, fill_bgr = DOT_FILL_PALETTE[pal_i]
-            used_fill = fill_name
+        for attempt, (radius, n_settle, min_peak) in enumerate(attempts, start=1):
             dark = None
             for _ in range(n_settle):
                 dark = show_frame(black)
@@ -795,11 +847,11 @@ def refine_with_board_corner_projections(
             img = render_single_color_dot(
                 projector_size,
                 (float(px), float(py)),
-                bgr,
+                CAL_DOT_GREEN,
                 label,
-                status=f"refine {label} ({i + 1}/4) [{fill_name}]",
+                status=f"outside {label} ({i + 1}/4) green",
                 radius=radius,
-                fill_bgr=fill_bgr,
+                fill_bgr=CAL_DOT_GREEN,
             )
             lit = None
             for _ in range(n_settle):
@@ -808,27 +860,25 @@ def refine_with_board_corner_projections(
             pt = _detect_dot_near(dark, lit, expect, roi_radius=roi_radius, min_peak=min_peak)
             if pt is not None:
                 if attempt > 1:
-                    print(f"refine {label}: ok on attempt {attempt} with {fill_name}")
+                    print(f"outside {label}: ok on attempt {attempt}")
                 break
-            print(f"refine {label}: miss [{fill_name}] — next palette/size")
+            print(f"outside {label}: miss attempt {attempt} — larger green")
         if pt is None:
-            print(f"refine missed {label} after {len(attempts)} palette/size attempts")
+            print(f"outside refine missed {label}")
             return None
-        err = float(np.linalg.norm(np.array(pt) - board_inset[i]))
+        err = float(np.linalg.norm(np.array(pt) - board_out[i]))
         print(
-            f"refine {label}: cam_seen=({pt[0]:.0f},{pt[1]:.0f}) "
-            f"board=({board_inset[i, 0]:.0f},{board_inset[i, 1]:.0f}) "
-            f"err≈{err:.0f}px [{used_fill}]"
+            f"outside {label}: cam_seen=({pt[0]:.0f},{pt[1]:.0f}) "
+            f"expect=({board_out[i, 0]:.0f},{board_out[i, 1]:.0f}) err≈{err:.0f}px"
         )
         cam_seen.append(pt)
     cam_seen_arr = np.array(cam_seen, dtype=np.float64)
     H_cam_to_proj = estimate_homography(cam_seen_arr, proj_pts)
     if H_cam_to_proj is None:
         return None
-    # Where to draw so light lands on true board corners:
     proj_for_board = warp_points(board_cam, H_cam_to_proj)
-    if not quad_looks_sane(proj_for_board, projector_size, min_area=5000.0, min_edge=40.0):
-        print("refine: projector quad not sane")
+    if not quad_looks_sane(proj_for_board, projector_size, min_area=5000.0, min_edge=40.0, max_aspect=2.2):
+        print(f"outside refine: projector board sword/degenerate (aspect≈{quad_bbox_aspect(proj_for_board):.1f})")
         return None
     H_table_to_projector = estimate_homography(table, proj_for_board)
     H_table_to_camera = estimate_homography(table, board_cam)
@@ -841,6 +891,20 @@ def refine_with_board_corner_projections(
         board_corners_camera=board_cam,
         projector_size=cal.projector_size,
         camera_size=cal.camera_size,
+    )
+
+
+def refine_with_board_corner_projections(
+    projector_size: tuple[int, int],
+    layout: TableLayout,
+    cal: CalibrationData,
+    board_cam: np.ndarray,
+    show_frame,
+    settle: int = 3,
+) -> CalibrationData | None:
+    """Backward-compatible name → outside-cloth green refine."""
+    return refine_with_outside_green_dots(
+        projector_size, layout, cal, board_cam, show_frame, settle=settle
     )
 
 
@@ -935,11 +999,24 @@ class Calibrator:
 
         if H_table_to_camera is None or H_table_to_projector is None:
             return None
-        # Final check: projected board outline must be a sane quad in projector space.
+        # Final check: projected board outline must be a sane (not sword-shaped) quad.
         proj_board = warp_points(table, H_table_to_projector)
-        if not quad_looks_sane(proj_board, self.projector_size, min_area=5000.0, min_edge=40.0):
-            print("verify grid would be degenerate — refusing solve")
+        if not quad_looks_sane(proj_board, self.projector_size, min_area=5000.0, min_edge=40.0, max_aspect=2.2):
+            print(
+                f"verify grid would be degenerate/sword "
+                f"(aspect≈{quad_bbox_aspect(proj_board):.1f}) — refusing solve"
+            )
             return None
+        # Colour dots must not be a tiny patch vs the real board (extrapolation → sword).
+        if used_board and board_cam is not None:
+            board_area = abs(float(cv2.contourArea(board_cam.astype(np.float32))))
+            color_area = abs(float(cv2.contourArea(order_quad_tl_tr_br_bl(color_cam).astype(np.float32))))
+            if board_area > 1 and color_area < board_area * 0.12:
+                print(
+                    f"colour quad tiny vs chessboard ({color_area:.0f} vs {board_area:.0f} px²) "
+                    "— refusing solve"
+                )
+                return None
         debug_frame = board_src
         cal = CalibrationData(
             H_table_to_camera=H_table_to_camera,
@@ -958,10 +1035,10 @@ class Calibrator:
         )
 
     def auto_calibrate_with_search(self, show_and_grab, show_frame) -> AutoCalibrateResult | None:
-        """Board-first cal: find chessboard → seed H with small dots → 4-dot board corners → verify grid.
+        """Board-first: chessboard → green seed (ROI near board) → outside green refine → verify.
 
-        Large colour blobs that hang off the wood rim are avoided; corner dots are small
-        and aimed at the playing-field corners once the board is known.
+        Dots sit on the cloth beside the board (bright green), not on wood squares.
+        Whole-frame blob latching is blocked by a board ROI; sword-shaped H is refused.
         """
         w, h = self.projector_size
         black = np.zeros((h, w, 3), dtype=np.uint8)
@@ -982,19 +1059,32 @@ class Calibrator:
         if board_cam is not None:
             board_cam = order_quad_tl_tr_br_bl(board_cam)
             fh, fw = board_frame.shape[:2]
-            if not quad_looks_sane(board_cam, (fw, fh), min_area=(fw * fh) * 0.02, min_edge=min(fw, fh) * 0.08):
+            if not quad_looks_sane(
+                board_cam, (fw, fh), min_area=(fw * fh) * 0.02, min_edge=min(fw, fh) * 0.08, max_aspect=2.5
+            ):
                 print("chessboard quad not sane — falling back to colour search")
                 board_cam = None
 
         if board_cam is not None:
-            # 1) Seed camera↔projector with a tight centred 4-dot (small dots).
             seed_pts = default_projector_quad(self.projector_size)  # scale 0.32
-            print("board found — seeding H with small centre dots…")
+            roi_c, roi_r = cam_roi_from_quad(board_cam, margin=0.65)
+            print(
+                f"board found — seeding with bright green dots "
+                f"(search near board, r≈{roi_r:.0f}px)…"
+            )
 
             def _grab(img: np.ndarray) -> np.ndarray:
                 return show_frame(img)
 
-            color_cam = capture_corners_sequential(self.projector_size, seed_pts, _grab, settle=3)
+            color_cam = capture_corners_sequential(
+                self.projector_size,
+                seed_pts,
+                _grab,
+                settle=3,
+                roi_center=roi_c,
+                roi_radius=roi_r,
+                prefer_green=True,
+            )
             if color_cam is None:
                 print("seed dots missed — falling back to colour search")
             else:
@@ -1002,29 +1092,48 @@ class Calibrator:
                     board_frame, proj_pts=seed_pts, color_cam=color_cam, board_frame_bgr=board_frame
                 )
                 if rough is None or not rough.used_chessboard:
-                    print("board+seed solve failed — falling back to colour search")
+                    print("board+seed solve failed/refused — falling back to colour search")
                 else:
-                    # 2) 4-dot the board corners (inset), re-solve, then verify grid lines.
-                    refined = refine_with_board_corner_projections(
+                    refined = refine_with_outside_green_dots(
                         self.projector_size,
                         self.layout,
                         rough.calibration,
                         rough.calibration.board_corners_camera,
                         show_frame,
                     )
-                    cal = refined if refined is not None else rough.calibration
-                    if refined is None:
-                        print("corner 4-dot refine skipped — keeping seed solve")
+                    if refined is not None:
+                        cal = refined
+                        print("outside green refine applied — drawing verify grid")
+                        msg = "ok: board → green seed → outside green + verify grid"
                     else:
-                        print("corner 4-dot refine applied")
-                    verify = render_verify_overlay(self.projector_size, cal, self.layout)
-                    return AutoCalibrateResult(
-                        calibration=cal,
-                        camera_debug_bgr=annotate_camera_debug(board_frame, color_cam, cal.board_corners_camera),
-                        verify_projector_bgr=verify,
-                        used_chessboard=True,
-                        message="ok: board → small seed dots → corner 4-dot + verify grid",
-                    )
+                        # Only keep seed if projected board is not a sword.
+                        proj_board = warp_points(
+                            self.layout.board_corners(), rough.calibration.H_table_to_projector
+                        )
+                        if quad_looks_sane(
+                            proj_board, self.projector_size, min_area=5000.0, min_edge=40.0, max_aspect=2.2
+                        ):
+                            cal = rough.calibration
+                            print("outside refine skipped — keeping seed (proj board looks ok)")
+                            msg = "ok: board → green seed + verify grid (no outside refine)"
+                        else:
+                            print(
+                                f"outside refine failed and seed proj is sword "
+                                f"(aspect≈{quad_bbox_aspect(proj_board):.1f}) — not using it"
+                            )
+                            cal = None
+                            msg = ""
+                    if cal is not None:
+                        verify = render_verify_overlay(self.projector_size, cal, self.layout)
+                        return AutoCalibrateResult(
+                            calibration=cal,
+                            camera_debug_bgr=annotate_camera_debug(
+                                board_frame, color_cam, cal.board_corners_camera
+                            ),
+                            verify_projector_bgr=verify,
+                            used_chessboard=True,
+                            message=msg,
+                        )
 
         # Fallback: old colour-quad search (no board / seed failed).
         print("auto calibrate: colour-quad search fallback…")
@@ -1039,7 +1148,7 @@ class Calibrator:
         )
         if result is None or not result.used_chessboard:
             return result
-        refined = refine_with_board_corner_projections(
+        refined = refine_with_outside_green_dots(
             self.projector_size,
             self.layout,
             result.calibration,
@@ -1047,9 +1156,18 @@ class Calibrator:
             show_frame,
         )
         if refined is None:
-            print("corner refine skipped — keeping initial solve")
+            proj_board = warp_points(self.layout.board_corners(), result.calibration.H_table_to_projector)
+            if not quad_looks_sane(
+                proj_board, self.projector_size, min_area=5000.0, min_edge=40.0, max_aspect=2.2
+            ):
+                print(
+                    f"fallback refine missed and colour solve is sword "
+                    f"(aspect≈{quad_bbox_aspect(proj_board):.1f}) — refusing"
+                )
+                return None
+            print("outside refine skipped — keeping initial solve")
             return result
-        print("corner refine applied")
+        print("outside green refine applied")
         return AutoCalibrateResult(
             calibration=refined,
             camera_debug_bgr=annotate_camera_debug(
@@ -1057,7 +1175,7 @@ class Calibrator:
             ),
             verify_projector_bgr=render_verify_overlay(self.projector_size, refined, self.layout),
             used_chessboard=True,
-            message=result.message + " + corner refine",
+            message=result.message + " + outside green refine",
         )
     def solve_from_correspondences(
         self,

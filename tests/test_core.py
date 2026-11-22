@@ -22,6 +22,8 @@ from gamebot.calibration import (
     detect_dot_by_difference,
     make_grid_pattern,
     order_quad_tl_tr_br_bl,
+    outside_board_table_mm,
+    quad_bbox_aspect,
     quad_looks_sane,
     render_color_corner_pattern,
 )
@@ -223,6 +225,19 @@ def test_difference_dot_roi_picks_near_expected() -> None:
     roi_pt = detect_dot_by_difference(dark, lit, roi_center=(200, 150), roi_radius=50)
     assert roi_pt is not None
     assert abs(roi_pt[0] - 200) < 8 and abs(roi_pt[1] - 150) < 8
+
+
+def test_sword_quad_rejected_and_outside_dots() -> None:
+    """Bad H made a ~96×642 sword — bbox aspect must fail. Outside dots leave the board."""
+    sword = np.array([[220, 580], [115, 514], [600, 425], [855, 407]], dtype=np.float64)
+    assert quad_bbox_aspect(sword) > 2.4
+    assert not quad_looks_sane(sword, (1280, 720), min_area=1000.0, min_edge=20.0)
+    layout = TableLayout()
+    board = layout.board_corners()
+    outside = outside_board_table_mm(layout)
+    c = board.mean(axis=0)
+    for b, o in zip(board, outside):
+        assert np.linalg.norm(o - c) > np.linalg.norm(b - c)
 
 
 def test_chessboard_center_with_start_pieces() -> None:

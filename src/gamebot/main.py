@@ -231,7 +231,7 @@ class App:
             self.projector.poll_key(25)
             return self.camera.read()
 
-        print("auto calibrate: board-first (chessboard → small corner dots → verify grid)…")
+        print("auto calibrate: board-first (chessboard → green cloth dots → outside refine → verify)…")
         result = self.calibrator.auto_calibrate_with_search(show_and_grab, show_frame)
         if result is None:
             print("auto calibrate failed — keeping previous / mock calibration")
