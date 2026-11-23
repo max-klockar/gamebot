@@ -25,6 +25,7 @@ from gamebot.adapters.led import (
 )
 from gamebot.calibration import Calibrator, make_grid_pattern
 from gamebot.geometry import TableLayout
+from gamebot.paths import gamebot_home
 
 
 def _draw_led_swatch(frame: np.ndarray, led: LedRing, label: str) -> None:
@@ -87,7 +88,6 @@ def run_auto_calibrate(
     camera: str,
     projector: str,
     out_jpg: Path,
-    settle_s: float = 1.0,
     zoom: float = DEFAULT_CAMERA_ZOOM,
 ) -> int:
     """Search coloured corners onto the table, solve, verify grid, write debug JPG."""
@@ -143,7 +143,7 @@ def run_auto_calibrate(
     cal_path = out_jpg.with_suffix(".json")
     result.calibration.save(cal_path)
     # Also install where `gamebot` loads calibration from.
-    gamebot_cal = Path.home() / ".gamebot" / "calibration.json"
+    gamebot_cal = gamebot_home() / "calibration.json"
     gamebot_cal.parent.mkdir(parents=True, exist_ok=True)
     result.calibration.save(gamebot_cal)
     print(result.message)
@@ -168,7 +168,7 @@ def main() -> None:
     p.add_argument("--led", action="store_true", help="Enable LED ring hardware backend")
     p.add_argument("--led-demo", action="store_true", help="Cycle blue / purple / red LED modes (headless OK)")
     p.add_argument("--calibrate", action="store_true", help="Auto colour-corner calibration + verify image")
-    p.add_argument("--out", type=Path, default=Path.home() / "cal_verify.jpg", help="Debug JPG path")
+    p.add_argument("--out", type=Path, default=None, help="Debug JPG path")
     p.add_argument("--led-count", type=int, default=90, help="WS2812 LED count (default 90)")
     p.add_argument("--loop", action="store_true", help="With --led-demo, repeat until Ctrl+C")
     p.add_argument("--seconds", type=float, default=9.0, help="Total demo length (split across 3 colors)")
@@ -185,8 +185,9 @@ def main() -> None:
         return
 
     if args.calibrate:
+        out = args.out or (gamebot_home() / "cal_verify.jpg")
         raise SystemExit(
-            run_auto_calibrate(args.camera, args.projector, args.out, zoom=float(args.zoom))
+            run_auto_calibrate(args.camera, args.projector, out, zoom=float(args.zoom))
         )
 
     cam = create_camera(args.camera, (1280, 720), zoom=float(args.zoom))

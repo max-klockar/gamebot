@@ -46,9 +46,13 @@ def main() -> None:
 
         cfg = AppConfig()
         cam = create_camera("picam", cfg.camera_size, None, zoom=cfg.camera_zoom)
-        frame = cam.read()
-        for _ in range(4):
+        cam.open()
+        try:
             frame = cam.read()
+            for _ in range(4):
+                frame = cam.read()
+        finally:
+            cam.close()
     elif args.image is not None:
         frame = cv2.imread(str(args.image))
         if frame is None:

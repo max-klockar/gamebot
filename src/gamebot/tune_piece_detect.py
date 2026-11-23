@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from gamebot.calibration import CalibrationData
+from gamebot.paths import gamebot_home
 
 
 def _load_roi(image: Path, explicit: Path | None) -> np.ndarray | None:
@@ -32,7 +33,7 @@ def _load_roi(image: Path, explicit: Path | None) -> np.ndarray | None:
         if corners is not None:
             return np.asarray(corners, dtype=np.float64)
 
-    cal = Path.home() / ".gamebot" / "calibration.json"
+    cal = gamebot_home() / "calibration.json"
     if cal.is_file():
         try:
             return CalibrationData.load(cal).board_corners_camera

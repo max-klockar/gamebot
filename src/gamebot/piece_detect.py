@@ -18,6 +18,7 @@ _ONNX_SESSION = None
 _ONNX_PATH: Path | None = None
 _LOGGED_WEIGHTS = False
 _ZERO_LOG_I = 0
+_LAST_DET_LOG: tuple[int, str] | None = None
 
 CLASS_WHITE = 0
 CLASS_BLACK = 1
@@ -195,9 +196,10 @@ def detect_pieces(
                 best_tag = tag
             if len(best) >= 16:
                 break
-        global _ZERO_LOG_I
+        global _ZERO_LOG_I, _LAST_DET_LOG
         if not best:
             _ZERO_LOG_I += 1
+            _LAST_DET_LOG = None
             if _ZERO_LOG_I <= 3 or _ZERO_LOG_I % 25 == 0:
                 print(
                     f"piece detect: 0 boxes (conf≥{conf:.2f}, peak_score≈{best_peak:.3f}, "
@@ -205,7 +207,10 @@ def detect_pieces(
                 )
         else:
             _ZERO_LOG_I = 0
-            print(f"piece detect: {len(best)} boxes via {best_tag} (peak≈{best_peak:.3f})")
+            sig = (len(best), best_tag)
+            if sig != _LAST_DET_LOG:
+                _LAST_DET_LOG = sig
+                print(f"piece detect: {len(best)} boxes via {best_tag} (peak≈{best_peak:.3f})")
         return best
     except ImportError:
         print("piece detect: onnxruntime missing")

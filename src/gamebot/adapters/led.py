@@ -4,8 +4,8 @@ from __future__ import annotations
 
 Modes:
   idle        — soft vague blue (menus / idle)
-  player_turn — turquoise breathe (human to move)
-  bot_turn    — purple pulse (engine thinking or place bot piece)
+  player_turn — turquoise tide around the ring (human to move, including the arrow)
+  bot_turn    — two purple comets (engine thinking, or a human move just seen)
   calibrate   — rainbow chase (auto-cal; lights shoot up, safe for camera)
   error       — calm red breathe (illegal / unexpected — waiting for fix)
   overheat    — violent red if the Pi is too hot (highest priority)
@@ -54,6 +54,26 @@ def pulse_brightness(t: float, period: float, amplitude: float) -> float:
     # Cosine breathe: (1 - amp/2) + (amp/2)*cos → stays in [1-amp, 1]
     phase = (2.0 * math.pi * t) / period
     return max(0.0, min(1.0, (1.0 - amplitude) + amplitude * (0.5 + 0.5 * math.cos(phase))))
+
+
+def ring_wave(
+    n: int,
+    t: float,
+    base: tuple[int, int, int],
+    peak: tuple[int, int, int],
+    *,
+    period: float,
+    laps: float,
+) -> list[tuple[int, int, int]]:
+    """A soft crest traveling around the ring. t=0 lights pixel 0 at full peak."""
+    count = max(n, 1)
+    pixels: list[tuple[int, int, int]] = []
+    for i in range(count):
+        x = (i / count) * laps - (t / period if period else 0.0)
+        w = 0.5 + 0.5 * math.cos(2.0 * math.pi * x)
+        w = w * w
+        pixels.append(tuple(int(base[c] + (peak[c] - base[c]) * w) for c in range(3)))
+    return pixels
 
 
 def apply_pulse(rgb: tuple[int, int, int], brightness: float) -> tuple[int, int, int]:
@@ -304,8 +324,9 @@ class LedRing:
             self._app_mode = mode
 
     def thinking(self, active: bool) -> None:
-        """Engine calculating → purple. When done, leave BOT_TURN (place piece)."""
-        self.set_mode(LedMode.THINKING if active else LedMode.BOT_TURN)
+        """Engine calculating → purple comets. The caller picks the mode when it ends."""
+        if active:
+            self.set_mode(LedMode.THINKING)
 
     def player_turn(self) -> None:
         self.set_mode(LedMode.PLAYER_TURN)
@@ -336,13 +357,8 @@ class LedRing:
             return self._app_mode
 
     def sample(self, t: float | None = None) -> tuple[int, int, int]:
-        """Compute solid RGB for time t (seconds since open). Useful for tests."""
-        mode = self._effective_mode()
-        now = time.monotonic() - self._t0 if t is None else t
-        if mode == LedMode.CALIBRATE:
-            return rainbow_rgb(now, 0, 1)
-        base, amp, period = _MODE_STYLE[mode]
-        return apply_pulse(base, pulse_brightness(now, period, amp))
+        """RGB of the first pixel at time t (seconds since open). Useful for tests."""
+        return self.sample_pixels(t)[0]
 
     def sample_pixels(self, t: float | None = None) -> list[tuple[int, int, int]]:
         mode = self._effective_mode()
@@ -350,7 +366,16 @@ class LedRing:
         n = max(1, int(self.backend.led_count()))
         if mode == LedMode.CALIBRATE:
             return [rainbow_rgb(now, i, n) for i in range(n)]
-        rgb = self.sample(now)
+        if mode == LedMode.PLAYER_TURN:
+            return ring_wave(
+                n, now, (0, 22, 32), (80, 255, 220), period=3.4, laps=1.0
+            )
+        if mode in (LedMode.BOT_TURN, LedMode.THINKING):
+            return ring_wave(
+                n, now, (18, 0, 32), (210, 40, 255), period=1.05, laps=2.0
+            )
+        base, amp, period = _MODE_STYLE[mode]
+        rgb = apply_pulse(base, pulse_brightness(now, period, amp))
         return [rgb] * n
 
     def _run(self) -> None:
@@ -380,7 +405,3 @@ class LedRing:
             self.backend.show((0, 0, 0))
         except Exception:
             pass
-
-    def set_brightness(self, value: float) -> None:
-        # Not used by RGB modes; kept for old call sites
-        pass

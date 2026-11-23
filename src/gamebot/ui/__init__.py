@@ -39,6 +39,10 @@ class DwellTapTracker:
     def reset(self) -> None:
         self._state = DwellState()
 
+    @property
+    def active_zone_id(self) -> str | None:
+        return self._state.zone_id
+
     def update(
         self,
         zones: list[HitZone],

@@ -53,7 +53,7 @@ class App:
             debug=config.debug_overlay,
             project_virtual_table=config.virtual_table == "always",
         )
-        self.dwell = DwellTapTracker(dwell_ms=config.dwell_ms)
+        self.dwell = DwellTapTracker(dwell_ms=config.dwell_ms, motion_mm=config.dwell_motion_mm)
         self.token_detector = TokenTapDetector()
         self.plugins = discover_plugins()
         self.phase = HostPhase.SPLASH
@@ -90,9 +90,15 @@ class App:
         assert path is not None
         if path.exists():
             self.calibration = CalibrationData.load(path)
-        else:
+        elif self.config.camera == "mock":
             self.calibration = self.calibrator.mock_calibrate()
             self.calibration.save(path)
+        elif self.config.skip_calibrate:
+            raise SystemExit(f"no calibration at {path} — run once without --skip-cal")
+        else:
+            print(f"no calibration at {path} — running auto-calibrate")
+            self.calibration = None
+            return
         self.renderer.set_homography(self.calibration.H_table_to_projector)
 
     def run(self) -> int:
@@ -158,7 +164,7 @@ class App:
                     else:
                         self.phase = HostPhase.IDENTIFY
             else:
-                active = self.dwell._state.zone_id
+                active = self.dwell.active_zone_id
                 progress = self.dwell.progress()
                 proj = self.renderer.render(scene, progress, active)
 
@@ -240,9 +246,14 @@ class App:
         print("auto calibrate: board-first (chessboard → green cloth dots → outside refine → verify)…")
         result = self.calibrator.auto_calibrate_with_search(show_and_grab, show_frame)
         if result is None:
-            print("auto calibrate failed — keeping previous / mock calibration")
+            print("auto calibrate failed — keeping previous calibration")
             if self.calibration is None:
-                self.calibration = self.calibrator.mock_calibrate()
+                if self.config.camera == "mock":
+                    self.calibration = self.calibrator.mock_calibrate()
+                else:
+                    print("auto calibrate failed and no saved calibration — exiting")
+                    self._stop_requested = True
+                    return
             if self.config.quick_start_elo is not None:
                 self._start_chess_quick()
             else:

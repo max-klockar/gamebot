@@ -19,10 +19,11 @@ import numpy as np
 
 from gamebot.adapters import DEFAULT_CAMERA_ZOOM, create_camera, create_projector
 from gamebot.calibration import CalibrationData
+from gamebot.paths import gamebot_home
 
 
 def _try_load_board_roi() -> np.ndarray | None:
-    path = Path.home() / ".gamebot" / "calibration.json"
+    path = gamebot_home() / "calibration.json"
     if not path.is_file():
         return None
     try:

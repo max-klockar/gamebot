@@ -11,7 +11,13 @@ from chess_plugin.db import Database
 from chess_plugin.game import ChessSession, Phase, SkillBand, skill_to_stockfish
 from chess_plugin.plugin import ChessPlugin, looks_like_chessboard
 from chess_plugin.ui import load_icon
-from chess_plugin.vision import hypothesize_moves, occupancy_from_board
+from chess_plugin.vision import (
+    OccupancyKind,
+    classify_occupancy_vs_board,
+    hypothesize_moves,
+    occupancy_frame_is_noise,
+    occupancy_from_board,
+)
 from gamebot.adapters.camera import MockCamera
 from gamebot.adapters.led import LedMode, LedRing, MockLedBackend, ThermalSensor, pulse_brightness
 from gamebot.calibration import (
@@ -99,6 +105,7 @@ def test_illegal_and_promotion(db: Database) -> None:
     s.select_profile(guest)
     s.select_skill_band(SkillBand.BEGINNER)
     s.select_skill_level(1)
+    s.confirm_setup()
     assert not s.try_human_move(chess.Move.from_uci("e2e5"))
     assert s.revert_hint is not None
 
@@ -314,3 +321,44 @@ def test_led_modes() -> None:
 def test_config(tmp_path: Path) -> None:
     cfg = AppConfig(data_dir=tmp_path / "data")
     assert cfg.data_dir.exists()
+    tw, th = cfg.identity_H()[0, 0], cfg.identity_H()[1, 1]
+    layout_w, layout_h = TableLayout().table_size
+    assert abs(cfg.projector_size[0] / layout_w - tw) < 1e-9
+    assert abs(cfg.projector_size[1] / layout_h - th) < 1e-9
+
+
+def test_extra_piece_is_noise_not_a_move() -> None:
+    """33 detections on a full board must not look like a move or a fault."""
+    board = chess.Board()
+    seen = occupancy_from_board(board).copy()
+    seen[3, 3] = True
+    verdict = classify_occupancy_vs_board(seen, board)
+    assert verdict.kind == OccupancyKind.ILLEGAL_OR_MULTI
+    assert occupancy_frame_is_noise(seen, board, verdict)
+
+
+def test_wrong_color_is_not_a_human_move() -> None:
+    board = chess.Board()
+    seen = occupancy_from_board(board).copy()
+    seen[6, 4] = False  # e2
+    seen[4, 4] = True  # e4
+    colors = np.full((8, 8), -1, dtype=np.int8)
+    colors[4, 4] = 1  # black piece, white to move
+    verdict = classify_occupancy_vs_board(seen, board, colors=colors)
+    assert verdict.kind != OccupancyKind.ONE_LEGAL
+    colors[4, 4] = 0
+    verdict = classify_occupancy_vs_board(seen, board, colors=colors)
+    assert verdict.move is not None and verdict.move.uci() == "e2e4"
+
+
+def test_turn_leds_travel() -> None:
+    from gamebot.adapters.led import ring_wave
+
+    tide = ring_wave(16, 0.0, (0, 20, 30), (80, 255, 220), period=3.4, laps=1.0)
+    assert tide[0][1] > tide[8][1]
+    comets = ring_wave(16, 0.2, (18, 0, 32), (210, 40, 255), period=1.05, laps=2.0)
+    assert len({px[0] for px in comets}) > 2
+    led = LedRing(backend=MockLedBackend(), enabled=True)
+    led.set_mode(LedMode.PLAYER_TURN)
+    r, g, b = led.sample(0.0)
+    assert g > 200 and b > 180 and g > r
