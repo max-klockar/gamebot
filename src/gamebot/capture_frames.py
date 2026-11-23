@@ -34,6 +34,7 @@ def save_move_still(
     fen: str,
     camera_zoom: float,
     board_corners_camera: list | None,
+    set_name: str = "04_play",
 ) -> Path:
     """Write one play still plus a sidecar the training pull already picks up.
 
@@ -61,7 +62,7 @@ def save_move_still(
         "uci": uci,
         "who": who,
         "fen": fen,
-        "set": "04_play",
+        "set": set_name,
     }
     path.with_suffix(".json").write_text(json.dumps(meta, indent=2) + "\n")
     return path

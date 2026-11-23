@@ -362,6 +362,47 @@ def test_wrong_color_is_not_a_human_move() -> None:
     assert verdict.move is not None and verdict.move.uci() == "e2e4"
 
 
+def test_portal_page_starts_a_game() -> None:
+    import urllib.error
+    import urllib.request
+
+    from gamebot.portal import OperatorPortal, annotate_pieces
+
+    frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    marked = annotate_pieces(
+        frame,
+        [{"x1": 2, "y1": 2, "x2": 20, "y2": 30, "x": 8, "y": 16, "cls": 0, "conf": 0.9}],
+    )
+    assert int(marked[16, 8, 1]) > 150
+
+    portal = OperatorPortal(0)
+    portal.start()
+    try:
+        base = f"http://127.0.0.1:{portal.port}"
+        html = urllib.request.urlopen(base + "/", timeout=2).read().decode()
+        assert "Start chess" in html and "Capture still" in html
+        req = urllib.request.Request(
+            base + "/api/start",
+            data=b'{"elo":500,"skip_cal":true,"capture_moves":true}',
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=2) as res:
+            assert res.status == 204
+        cmd = portal.poll_start()
+        assert cmd is not None and cmd["elo"] == 500 and cmd["capture_moves"] is True
+        state = json.loads(urllib.request.urlopen(base + "/api/state", timeout=2).read())
+        assert state["host"] == "STARTING"
+        again = urllib.request.Request(base + "/api/start", data=b'{"elo":500}', method="POST")
+        try:
+            urllib.request.urlopen(again, timeout=2)
+            raised = False
+        except urllib.error.HTTPError as exc:
+            raised = exc.code == 409
+        assert raised
+    finally:
+        portal.close()
+
+
 def test_save_move_still_writes_sidecar(tmp_path: Path) -> None:
     from gamebot.capture_frames import save_move_still
 

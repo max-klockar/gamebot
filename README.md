@@ -11,6 +11,18 @@ gamebot --mock
 
 After calibrate, plugins run `identify()`. One match starts that game; zero or many matches shows an icon chooser on the table.
 
+## Operator page
+
+The camera can only be open in the game process, so the page is served from there.
+
+```bash
+./scripts/run-pi.sh --portal --camera picam --projector hdmi
+```
+
+Open `http://<pi>:8080`. From the phone: live camera, start chess at an Elo (optional skip-cal and a still after each move), capture a training frame, or shut the Pi down. During a game the camera image shows each detection and the standing point, and the board on the page is the occupancy the game believes (rank 8 at the top). Logs are the same lines as the terminal.
+
+`--elo` still starts immediately. Add `--portal` beside it if you also want the page. Booting straight into the page is `gamebot.service` in the hardware repo.
+
 ## Chess vision (pieces + board)
 
 **Runtime board lock:** YOLO AABB (`board.onnx` via onnxruntime) + classical

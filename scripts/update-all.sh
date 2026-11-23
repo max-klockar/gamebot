@@ -87,8 +87,9 @@ if [[ -n "$PLUGIN" ]]; then
   echo "HEAD chess:    $(git -C "$PLUGIN" log -1 --oneline)"
 fi
 echo "done. example:"
-echo "  ./scripts/run-pi.sh --camera picam --projector hdmi --elo 500"
-echo "  # add --capture-moves to save a still after each registered move"
+echo "  ./scripts/run-pi.sh --portal --camera picam --projector hdmi"
+echo "  # page on :8080 — live camera, start at an Elo, capture, shut down"
+echo "  # or: ./scripts/run-pi.sh --camera picam --projector hdmi --elo 500 --capture-moves"
 echo "  # --elo skips menus only; still calibrates unless --skip-cal; waits for starting setup"
 echo "  ./scripts/run-pi.sh python -m gamebot.capture_frames"
 echo "  ./scripts/run-pi.sh python -m gamebot.capture_sets"

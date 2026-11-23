@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
+import subprocess
+import sys
+import time
 from enum import Enum, auto
 from pathlib import Path
 
@@ -23,6 +27,7 @@ from gamebot.vision import TokenTapDetector
 
 
 class HostPhase(Enum):
+    PORTAL = auto()  # camera live, waiting for the operator page to start a game
     SPLASH = auto()
     CALIBRATE = auto()
     VERIFY = auto()
@@ -68,6 +73,11 @@ class App:
         self._last_virtual_table: bool | None = False if config.virtual_table == "never" else None
         self._virtual_table_latched = config.virtual_table == "always"
         self._stop_requested = False
+        self._shutdown_after = False
+        self._splash_frames = 0
+        self._last_jpg_at = 0.0
+        self.portal = None
+        self._stdio = (sys.stdout, sys.stderr)
 
     def _request_stop(self, signum: int, _frame: object) -> None:
         """GPIO shutdown / systemd / Ctrl+C — exit the loop cleanly."""
@@ -105,26 +115,50 @@ class App:
         self._stop_requested = False
         prev_term = signal.signal(signal.SIGTERM, self._request_stop)
         prev_int = signal.signal(signal.SIGINT, self._request_stop)
-        self.camera.open()
-        self.projector.open()
-        self.led.open()
-        self.led.on()
-        self.load_or_mock_calibration()
-        self.phase = HostPhase.SPLASH
         try:
+            if self.config.portal:
+                from gamebot.portal import OperatorPortal, _Tee
+
+                self.portal = OperatorPortal(self.config.portal_port)
+                try:
+                    self.portal.start()
+                except OSError as exc:
+                    print(f"portal failed to bind :{self.config.portal_port} ({exc})")
+                    return 1
+                sys.stdout = _Tee(sys.stdout, self.portal)
+                sys.stderr = _Tee(sys.stderr, self.portal)
+            self.camera.open()
+            self.projector.open()
+            self.led.open()
+            self.led.on()
+            self.load_or_mock_calibration()
+            waiting = self.config.portal and self.config.quick_start_elo is None
+            self.phase = HostPhase.PORTAL if waiting else HostPhase.SPLASH
             return self._loop()
         finally:
             signal.signal(signal.SIGTERM, prev_term)
             signal.signal(signal.SIGINT, prev_int)
+            sys.stdout, sys.stderr = self._stdio
+            if self.portal is not None:
+                self.portal.close()
             self.ambient.stop()
             self.led.close()
             self.projector.close()
             self.camera.close()
+            if self._shutdown_after:
+                self._power_off()
+
+    def _power_off(self) -> None:
+        if os.geteuid() != 0:
+            print("portal: shutdown needs root (./scripts/run-pi.sh)")
+            return
+        print("portal: powering off")
+        subprocess.Popen(["/sbin/shutdown", "-h", "now"])
 
     def _loop(self) -> int:
-        splash_frames = 0
         while not self._stop_requested:
             frame = self.camera.read()
+            self._service_portal(frame)
             # Tick BEFORE building the scene so vision board-lock updates the
             # projected border on this same frame (otherwise outline looks stuck).
             if self.phase == HostPhase.PLAYING and self.session is not None:
@@ -133,7 +167,7 @@ class App:
                     self.ambient.stop()
                     self.led.set_mode(LedMode.IDLE)
                     self.session = None
-                    self.phase = HostPhase.IDENTIFY
+                    self.phase = HostPhase.PORTAL if self.config.portal else HostPhase.IDENTIFY
 
             scene = self._build_scene()
 
@@ -171,7 +205,12 @@ class App:
             self._draw_led_debug(proj)
             self.projector.show(proj)
 
-            if self.phase not in (HostPhase.CALIBRATE, HostPhase.VERIFY, HostPhase.SPLASH):
+            if self.phase not in (
+                HostPhase.CALIBRATE,
+                HostPhase.VERIFY,
+                HostPhase.SPLASH,
+                HostPhase.PORTAL,
+            ):
                 token_mm = self._token_table_mm(frame)
                 clicked = self.dwell.update(scene.zones, token_mm)
                 if clicked:
@@ -191,10 +230,12 @@ class App:
             if self._table_check_counter % 45 == 0:
                 self._update_virtual_table(frame)
 
-            if self.phase == HostPhase.SPLASH:
-                splash_frames += 1
-                if splash_frames > 15:
-                    splash_frames = 0
+            if self.phase == HostPhase.PORTAL:
+                self.led.set_mode(LedMode.IDLE)
+            elif self.phase == HostPhase.SPLASH:
+                self._splash_frames += 1
+                if self._splash_frames > 15:
+                    self._splash_frames = 0
                     self.led.set_mode(LedMode.IDLE)
                     # --elo only skips projected menus, not calibration.
                     if self.config.skip_calibrate:
@@ -309,7 +350,97 @@ class App:
         self.dwell.reset()
         self.ambient.start()
 
+    def _service_portal(self, frame: np.ndarray) -> None:
+        """Publish the camera, and apply start / capture / shutdown from the page."""
+        portal = self.portal
+        if portal is None:
+            return
+        if portal.take_shutdown():
+            print("portal: shut down requested")
+            self._shutdown_after = True
+            self._stop_requested = True
+            return
+        if portal.take_capture():
+            self._capture_portal_frame(frame)
+        if self.phase == HostPhase.PORTAL:
+            cmd = portal.poll_start()
+            if cmd is not None:
+                self._begin_from_portal(cmd)
+        now = time.monotonic()
+        if now - self._last_jpg_at < 0.25:
+            return
+        self._last_jpg_at = now
+        snap = {}
+        if self.session is not None and hasattr(self.session, "vision_snapshot"):
+            snap = self.session.vision_snapshot() or {}
+        from gamebot.portal import stream_jpeg
+
+        jpg = stream_jpeg(frame, snap.get("pieces"))
+        portal.publish(
+            jpg,
+            host=self.phase.name,
+            game=str(snap.get("phase") or ""),
+            fen=str(snap.get("fen") or ""),
+            colors=snap.get("colors"),
+        )
+
+    def _begin_from_portal(self, cmd: dict) -> None:
+        elo = int(cmd["elo"])
+        skip = bool(cmd["skip_cal"])
+        if skip and self.calibration is None:
+            msg = "No saved calibration. Start again with calibration on."
+            print(f"portal: {msg}")
+            assert self.portal is not None
+            self.portal.publish(b"", host="PORTAL")
+            self.portal.set_error(msg)
+            return
+        self.config.quick_start_elo = elo
+        self.config.skip_calibrate = skip
+        self.config.capture_moves = bool(cmd["capture_moves"])
+        print(
+            f"portal: start chess elo={elo} skip_cal={skip} capture_moves={self.config.capture_moves}"
+        )
+        self._splash_frames = 0
+        self.phase = HostPhase.SPLASH
+        self.led.set_mode(LedMode.IDLE)
+
+    def _capture_portal_frame(self, frame: np.ndarray) -> None:
+        from gamebot.capture_frames import save_move_still
+
+        fen = "unknown"
+        if self.session is not None and hasattr(self.session, "vision_snapshot"):
+            fen = str(self.session.vision_snapshot().get("fen") or fen)
+        corners = None
+        if self.calibration is not None and self.calibration.board_corners_camera is not None:
+            corners = np.asarray(self.calibration.board_corners_camera, dtype=float).reshape(-1, 2).tolist()
+        out = self.config.data_dir / "captures" / "sets" / "05_manual"
+        try:
+            path = save_move_still(
+                frame,
+                out,
+                uci="manual",
+                who="manual",
+                fen=fen,
+                camera_zoom=float(self.config.camera_zoom),
+                board_corners_camera=corners,
+                set_name="05_manual",
+            )
+        except (OSError, RuntimeError) as exc:
+            print(f"portal capture failed: {exc}")
+            if self.portal is not None:
+                self.portal.set_error(str(exc))
+            return
+        print(f"portal capture → {path}")
+        if self.portal is not None:
+            self.portal.note_capture_path(str(path))
+
     def _build_scene(self) -> Scene:
+        if self.phase == HostPhase.PORTAL and self.portal is not None:
+            sc = Scene(self.layout)
+            sc.title = "Gamebot"
+            sc.add_text(self.portal.url, self.layout.margin_mm, self.layout.margin_mm + 20, (220, 220, 220))
+            sc.add_text("Open this page to start", self.layout.margin_mm, self.layout.margin_mm + 48)
+            return sc
         if self.phase == HostPhase.SPLASH:
             sc = Scene(self.layout)
             sc.title = "Gamebot"
@@ -449,6 +580,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "to ~/.gamebot/captures/sets/04_play for later training",
     )
     p.add_argument(
+        "--portal",
+        action="store_true",
+        help="Host the operator page (live camera, start a game, capture, shut down). "
+        "With no --elo, wait on that page instead of starting immediately.",
+    )
+    p.add_argument("--portal-port", type=int, default=8080, help="Operator page port (default 8080)")
+    p.add_argument(
         "--led",
         choices=["auto", "mock", "ws2812", "rgb_pwm"],
         default=None,
@@ -489,6 +627,8 @@ def main(argv: list[str] | None = None) -> None:
         skip_calibrate=bool(args.skip_cal),  # --elo must NOT imply skip-cal
         quick_start_elo=args.elo,
         capture_moves=bool(args.capture_moves),
+        portal=bool(args.portal),
+        portal_port=int(args.portal_port),
         ambient_sound=bool(args.ambient),
         virtual_table=args.virtual_table or "never",
     )

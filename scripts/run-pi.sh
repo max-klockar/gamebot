@@ -3,6 +3,7 @@
 #
 #   ./scripts/run-pi.sh --camera picam --projector hdmi --elo 500
 #   ./scripts/run-pi.sh --camera picam --projector hdmi --elo 500 --capture-moves
+#   ./scripts/run-pi.sh --portal --camera picam --projector hdmi
 #   ./scripts/run-pi.sh python -m gamebot.piece_detect_demo
 #   ./scripts/run-pi.sh -m gamebot.piece_detect_demo
 set -euo pipefail

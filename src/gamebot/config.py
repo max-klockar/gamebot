@@ -37,6 +37,9 @@ class AppConfig:
     quick_start_elo: int | None = None
     # After each registered move, save a still under captures/sets/04_play.
     capture_moves: bool = False
+    # Operator page on the LAN. With no --elo, wait there until Start.
+    portal: bool = False
+    portal_port: int = 8080
     ambient_sound: bool = False
     # never = physical table only (default). auto = project virtual wood when
     # camera sees no table; always = force virtual. Auto's on→off flash confuses
