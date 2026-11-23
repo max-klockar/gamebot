@@ -144,6 +144,18 @@ def detect_pieces_onnx(
     return best, peak_all
 
 
+def _boxes_on_quad(dets: list[PieceDet], quad: np.ndarray | None) -> int:
+    """How many box centers actually sit on the board, not merely in the crop."""
+    if quad is None:
+        return len(dets)
+    contour = np.asarray(quad, dtype=np.float32).reshape(-1, 1, 2)
+    n = 0
+    for d in dets:
+        if cv2.pointPolygonTest(contour, (float(d.xy[0]), float(d.xy[1])), False) >= 0:
+            n += 1
+    return n
+
+
 def detect_pieces(
     frame_bgr: np.ndarray,
     *,
@@ -151,26 +163,33 @@ def detect_pieces(
     conf: float = 0.15,
     search_roi: np.ndarray | None = None,
 ) -> list[PieceDet]:
-    """Detect white/black pieces. Tries board crop then full frame if crop is empty."""
+    """Detect white/black pieces.
+
+    A tight crop often returns a handful of boxes while the full frame still
+    sees the set. Pick whichever lands more centers on the board. Stop after
+    the crop only when that on-board count is already a full position.
+    """
     weights_dir = Path(weights_dir) if weights_dir is not None else default_weights_dir()
     onnx = weights_dir / "pieces.onnx"
     if not onnx.exists():
         print(f"piece detect: missing {onnx}")
         return []
 
+    quad: np.ndarray | None = None
     crops: list[tuple[np.ndarray, float, float, str]] = []
     if search_roi is not None and len(np.asarray(search_roi).reshape(-1)) >= 8:
-        q = np.asarray(search_roi, dtype=np.float64).reshape(4, 2)
-        x0 = max(0, int(q[:, 0].min()) - 40)
-        y0 = max(0, int(q[:, 1].min()) - 40)
-        x1 = min(frame_bgr.shape[1], int(q[:, 0].max()) + 40)
-        y1 = min(frame_bgr.shape[0], int(q[:, 1].max()) + 40)
+        quad = np.asarray(search_roi, dtype=np.float64).reshape(4, 2)
+        x0 = max(0, int(quad[:, 0].min()) - 40)
+        y0 = max(0, int(quad[:, 1].min()) - 40)
+        x1 = min(frame_bgr.shape[1], int(quad[:, 0].max()) + 40)
+        y1 = min(frame_bgr.shape[0], int(quad[:, 1].max()) + 40)
         if x1 > x0 + 40 and y1 > y0 + 40:
             crops.append((frame_bgr[y0:y1, x0:x1], float(x0), float(y0), "board-crop"))
     crops.append((frame_bgr, 0.0, 0.0, "full-frame"))
 
     try:
         best: list[PieceDet] = []
+        best_on = -1
         best_peak = 0.0
         best_tag = ""
         for crop, ox, oy, tag in crops:
@@ -191,10 +210,13 @@ def detect_pieces(
                     )
                     for d in dets
                 ]
-            if len(dets) > len(best):
+            on_board = _boxes_on_quad(dets, quad)
+            if on_board > best_on:
                 best = dets
+                best_on = on_board
                 best_tag = tag
-            if len(best) >= 16:
+            # Crop already sees a full set — the second pass only adds flicker.
+            if tag == "board-crop" and on_board >= 28:
                 break
         global _ZERO_LOG_I, _LAST_DET_LOG
         if not best:

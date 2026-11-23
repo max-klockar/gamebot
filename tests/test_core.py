@@ -337,6 +337,16 @@ def test_extra_piece_is_noise_not_a_move() -> None:
     assert occupancy_frame_is_noise(seen, board, verdict)
 
 
+def test_half_detected_board_is_ignored() -> None:
+    """A 13-piece reading of a full board is a failed detect, not a position."""
+    board = chess.Board()
+    seen = occupancy_from_board(board).copy()
+    seen[2:6, :] = False
+    seen[0, :] = False
+    verdict = classify_occupancy_vs_board(seen, board)
+    assert occupancy_frame_is_noise(seen, board, verdict)
+
+
 def test_wrong_color_is_not_a_human_move() -> None:
     board = chess.Board()
     seen = occupancy_from_board(board).copy()

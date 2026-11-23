@@ -42,7 +42,7 @@ _MODE_STYLE: dict[LedMode, tuple[tuple[int, int, int], float, float]] = {
     LedMode.PLAYER_TURN: ((0, 200, 180), 0.35, 2.2),    # turquoise
     LedMode.BOT_TURN: ((150, 20, 200), 0.55, 0.75),     # purple
     LedMode.THINKING: ((150, 20, 200), 0.55, 0.75),     # purple (engine)
-    LedMode.ERROR: ((160, 24, 24), 0.28, 2.8),          # calm red breathe — fault
+    LedMode.ERROR: ((180, 12, 12), 0.06, 4.0),          # steady red — latched fault
     LedMode.OVERHEAT: ((255, 0, 0), 1.0, 0.12),         # violent red — thermal
 }
 
@@ -372,8 +372,10 @@ class LedRing:
             )
         if mode in (LedMode.BOT_TURN, LedMode.THINKING):
             return ring_wave(
-                n, now, (18, 0, 32), (210, 40, 255), period=1.05, laps=2.0
+                n, now, (28, 0, 48), (150, 24, 230), period=2.8, laps=1.0
             )
+        if mode == LedMode.ERROR:
+            return [(180, 12, 12)] * n
         base, amp, period = _MODE_STYLE[mode]
         rgb = apply_pulse(base, pulse_brightness(now, period, amp))
         return [rgb] * n
