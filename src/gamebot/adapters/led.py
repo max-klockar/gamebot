@@ -61,11 +61,31 @@ def apply_pulse(rgb: tuple[int, int, int], brightness: float) -> tuple[int, int,
     return (int(rgb[0] * b), int(rgb[1] * b), int(rgb[2] * b))
 
 
-def rainbow_rgb(t: float, index: int = 0, count: int = 1, *, speed: float = 0.42) -> tuple[int, int, int]:
-    """HSV rainbow; spatial phase along the strip + time chase."""
-    hue = (t * speed + index / max(count, 1)) % 1.0
-    r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 0.62)
-    return (int(r * 255), int(g * 255), int(b * 255))
+def _led_gamma(channel: float, gamma: float = 2.2) -> int:
+    """Map linear 0..1 → LED PWM with gamma so blends look smooth, not banded."""
+    c = max(0.0, min(1.0, channel))
+    return int(round((c**gamma) * 255.0))
+
+
+def rainbow_rgb(
+    t: float,
+    index: int = 0,
+    count: int = 1,
+    *,
+    speed: float = 0.14,
+    cycles: float = 0.55,
+    sat: float = 0.82,
+    val: float = 0.72,
+) -> tuple[int, int, int]:
+    """Soft HSV rainbow: slow chase, long spatial gradient, gamma-corrected.
+
+    `cycles` < 1 spreads less than a full wheel across the strip so neighbours
+    sit closer in hue (creamier gradient instead of hard primary bands).
+    """
+    n = max(count, 1)
+    hue = (t * speed + cycles * (index / n)) % 1.0
+    r, g, b = colorsys.hsv_to_rgb(hue, sat, val)
+    return (_led_gamma(r), _led_gamma(g), _led_gamma(b))
 
 
 @dataclass

@@ -294,10 +294,16 @@ def test_led_modes() -> None:
     assert r > 50 and b > 50
     led.set_mode(LedMode.CALIBRATE)
     a = led.sample(0.0)
-    bcol = led.sample(0.7)
+    bcol = led.sample(2.0)
     assert a != bcol  # rainbow advances with time
     pixels = led.sample_pixels(0.1)
     assert len(pixels) >= 1
+    # Neighbours should be close in colour (smooth gradient, not hard bands).
+    from gamebot.adapters.led import rainbow_rgb
+
+    p0 = rainbow_rgb(0.0, 0, 90)
+    p1 = rainbow_rgb(0.0, 1, 90)
+    assert sum(abs(p0[i] - p1[i]) for i in range(3)) < 40
     led.thermal = ThermalSensor(hot_celsius=75)
     led.thermal.set_mock(90)
     led.tick_thermal()
