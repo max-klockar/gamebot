@@ -44,12 +44,13 @@ _PAGE = """<!DOCTYPE html>
   button.danger { background: #8d2a2a; color: #fff; }
   button:disabled { opacity: 0.45; cursor: default; }
   table.board { border-collapse: collapse; }
-  table.board td { width: 28px; height: 28px; text-align: center; }
+  table.board td { width: 32px; height: 32px; text-align: center; padding: 0;
+                   font-size: 22px; line-height: 32px; }
   td.l { background: #d8c7a1; } td.d { background: #7d5a3a; }
-  i { display: inline-block; width: 16px; height: 16px; border-radius: 50%; }
-  i.w { background: #f4f0e6; box-shadow: inset 0 0 0 1px #222; }
-  i.b { background: #1a1a1a; box-shadow: inset 0 0 0 1px #888; }
-  i.u { background: #888; }
+  span.w { color: #f7f3ea; text-shadow: 0 0 1px #111, 0 1px 0 #111; }
+  span.b { color: #1a120c; text-shadow: 0 0 1px #f4efe4; }
+  span.bad { outline: 2px solid #e0b030; outline-offset: -2px; }
+  span.unk { color: #e0b030; font-weight: 700; }
   pre { white-space: pre-wrap; font: 12px/1.35 ui-monospace, monospace;
         max-height: 280px; overflow: auto; margin: 0; color: #c8c2b6; }
   .err { color: #ff8d8d; min-height: 1.2em; }
@@ -70,6 +71,7 @@ _PAGE = """<!DOCTYPE html>
   <section>
     <div class="card">
       <div id="board"></div>
+      <div class="sub">Symbols are the game's pieces. ? is a camera piece the game cannot name. A gold ring means the camera disagrees.</div>
       <div class="sub" id="fen"></div>
     </div>
     <div class="card">
@@ -98,14 +100,51 @@ const saved = document.getElementById("saved");
 const go = document.getElementById("go");
 let armOff = false;
 
-function drawBoard(colors) {
+const GLYPH = {
+  K: "♔", Q: "♕", R: "♖", B: "♗", N: "♘", P: "♙",
+  k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟",
+};
+
+function fenGrid(fen) {
+  const grid = [];
+  const rows = (fen || "").split(" ")[0].split("/");
+  for (let r = 0; r < 8; r++) {
+    const row = [];
+    let c = 0;
+    for (const ch of (rows[r] || "")) {
+      if (c >= 8) break;
+      if (ch >= "1" && ch <= "8") {
+        for (let i = 0; i < Number(ch) && c < 8; i++) { row.push(""); c++; }
+      } else {
+        row.push(ch);
+        c++;
+      }
+    }
+    while (row.length < 8) row.push("");
+    grid.push(row);
+  }
+  return grid;
+}
+
+function drawBoard(colors, fenStr) {
+  const pieces = fenGrid(fenStr);
   let html = '<table class="board">';
   for (let r = 0; r < 8; r++) {
     html += "<tr>";
     for (let c = 0; c < 8; c++) {
       const v = colors && colors[r] ? colors[r][c] : -1;
-      const cls = v === 0 ? "w" : v === 1 ? "b" : v === 2 ? "u" : "";
-      html += `<td class="${(r + c) % 2 ? "d" : "l"}">${cls ? `<i class="${cls}"></i>` : ""}</td>`;
+      const piece = pieces[r][c];
+      const light = (r + c) % 2 ? "d" : "l";
+      let mark = "";
+      if (piece) {
+        const white = piece === piece.toUpperCase();
+        const clash = v < 0 || v === 2 || (white && v === 1) || (!white && v === 0);
+        mark = `<span class="${white ? "w" : "b"}${clash ? " bad" : ""}">${GLYPH[piece] || piece}</span>`;
+      } else if (v === 0 || v === 1 || v === 2) {
+        const tone = v === 0 ? "w" : v === 1 ? "b" : "unk";
+        mark = `<span class="${tone}">?</span>`;
+      }
+      html += `<td class="${light}">${mark}</td>`;
     }
     html += "</tr>";
   }
@@ -118,8 +157,8 @@ async function tick() {
     const s = await res.json();
     const game = s.game ? " · " + s.game : "";
     phase.textContent = s.host + game;
-    fen.textContent = s.fen || "No position yet. Rank 8 is the top, as the camera sees it.";
-    drawBoard(s.colors);
+    fen.textContent = s.fen || "No position yet. Rank 8 is the top.";
+    drawBoard(s.colors, s.fen);
     log.textContent = (s.log || []).join("\\n");
     log.scrollTop = log.scrollHeight;
     err.textContent = s.error || "";
@@ -156,7 +195,7 @@ document.getElementById("off").addEventListener("click", async () => {
   await fetch("/api/shutdown", {method: "POST"});
 });
 
-drawBoard(null);
+drawBoard(null, "");
 setInterval(tick, 500);
 tick();
 </script>

@@ -428,7 +428,8 @@ def test_portal_page_starts_a_game() -> None:
     try:
         base = f"http://127.0.0.1:{portal.port}"
         html = urllib.request.urlopen(base + "/", timeout=2).read().decode()
-        assert "Start chess" in html and "Capture still" in html
+        assert "Start chess" in html and "Capture still" in html and "♕" in html
+        assert "cannot name" in html and 'class="${tone}">?</span>' in html
         req = urllib.request.Request(
             base + "/api/start",
             data=b'{"elo":500,"skip_cal":true,"capture_moves":true}',
