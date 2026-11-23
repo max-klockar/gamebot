@@ -2,6 +2,7 @@
 # Run gamebot (or any venv python command) on the Pi with root for WS2812 DMA.
 #
 #   ./scripts/run-pi.sh --camera picam --projector hdmi --elo 500
+#   ./scripts/run-pi.sh --camera picam --projector hdmi --elo 500 --capture-moves
 #   ./scripts/run-pi.sh python -m gamebot.piece_detect_demo
 #   ./scripts/run-pi.sh -m gamebot.piece_detect_demo
 set -euo pipefail

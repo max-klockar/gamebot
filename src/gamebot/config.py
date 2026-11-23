@@ -35,6 +35,8 @@ class AppConfig:
     hot_celsius: float = 75.0
     skip_calibrate: bool = False
     quick_start_elo: int | None = None
+    # After each registered move, save a still under captures/sets/04_play.
+    capture_moves: bool = False
     ambient_sound: bool = False
     # never = physical table only (default). auto = project virtual wood when
     # camera sees no table; always = force virtual. Auto's on→off flash confuses

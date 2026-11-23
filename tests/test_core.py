@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import chess
@@ -359,6 +360,80 @@ def test_wrong_color_is_not_a_human_move() -> None:
     colors[4, 4] = 0
     verdict = classify_occupancy_vs_board(seen, board, colors=colors)
     assert verdict.move is not None and verdict.move.uci() == "e2e4"
+
+
+def test_save_move_still_writes_sidecar(tmp_path: Path) -> None:
+    from gamebot.capture_frames import save_move_still
+
+    frame = np.zeros((32, 48, 3), dtype=np.uint8)
+    path = save_move_still(
+        frame,
+        tmp_path,
+        uci="e2e4",
+        who="human",
+        fen="rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+        camera_zoom=1.2,
+        board_corners_camera=[[0, 0], [10, 0], [10, 10], [0, 10]],
+    )
+    assert path.name.endswith("_e2e4_human.jpg")
+    assert path.is_file()
+    meta = json.loads(path.with_suffix(".json").read_text())
+    assert meta["uci"] == "e2e4" and meta["who"] == "human" and meta["set"] == "04_play"
+    assert meta["camera_zoom"] == 1.2
+    assert meta["fen"].split()[1] == "b"
+
+
+def test_standing_point_moves_toward_image_center() -> None:
+    from gamebot.piece_detect import FOOT_BIAS, standing_xy
+
+    frame = (1280, 720)
+    # Under the lens the head has nowhere to lean.
+    assert standing_xy((600, 320, 680, 400), frame) == (640.0, 360.0)
+
+    def shift(xyxy: tuple[float, float, float, float]) -> float:
+        x1, y1, x2, y2 = xyxy
+        sx, sy = standing_xy(xyxy, frame)
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        return ((cx - sx) ** 2 + (cy - sy) ** 2) ** 0.5
+
+    # Same center, right of the image middle. A radially longer box (a king)
+    # walks farther inward than a short one (a pawn).
+    pawn = (800.0, 350.0, 860.0, 390.0)
+    king = (760.0, 350.0, 900.0, 390.0)
+    assert standing_xy(pawn, frame)[0] < 830.0
+    assert shift(king) > shift(pawn) * 1.5
+    # The step stays on the ray from the image center through the box center.
+    x1, y1, x2, y2 = 900.0, 300.0, 980.0, 460.0
+    sx, sy = standing_xy((x1, y1, x2, y2), frame)
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    assert sx < cx
+    assert abs((sy - 360) * (cx - 640) - (cy - 360) * (sx - 640)) < 1e-4
+    assert (sx - 640) ** 2 + (sy - 360) ** 2 < (cx - 640) ** 2 + (cy - 360) ** 2
+    assert 0.0 < FOOT_BIAS < 1.0
+
+
+def test_nested_piece_box_is_one_detection() -> None:
+    from gamebot.piece_detect import PieceDet, suppress_duplicate_pieces
+
+    def box(xyxy, conf, cls=0):
+        x1, y1, x2, y2 = xyxy
+        return PieceDet(xy=((x1 + x2) / 2, (y1 + y2) / 2), cls=cls, conf=conf, xyxy=xyxy)
+
+    nested, dropped = suppress_duplicate_pieces(
+        [
+            box((100, 100, 160, 180), 0.9),
+            box((110, 120, 150, 170), 0.4),  # same piece, tight box inside
+        ]
+    )
+    assert dropped == 1 and len(nested) == 1 and nested[0].conf == 0.9
+
+    neighbours, kept_drop = suppress_duplicate_pieces(
+        [
+            box((0, 0, 40, 50), 0.8),
+            box((70, 0, 110, 50), 0.7),
+        ]
+    )
+    assert kept_drop == 0 and len(neighbours) == 2
 
 
 def test_turn_leds_travel() -> None:

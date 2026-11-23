@@ -1,7 +1,8 @@
 """White/black piece detector: YOLO ONNX (onnxruntime) for the Pi.
 
-Class ids match training: 0=white, 1=black. Centers map to board squares via
-the locked camera quad (same warp as occupancy).
+Class ids match training: 0=white, 1=black. The standing point is the box
+center pulled toward the image center (a straight-down camera throws the
+head farther out than the feet), then mapped through the locked board quad.
 """
 
 from __future__ import annotations
@@ -23,6 +24,15 @@ _LAST_DET_LOG: tuple[int, str] | None = None
 CLASS_WHITE = 0
 CLASS_BLACK = 1
 CLASS_NAMES = {CLASS_WHITE: "white", CLASS_BLACK: "black"}
+
+# Share of the way from the box center to its inner radial edge.
+# The head projects outward; the base is the inner edge. Going all the way
+# there overshoots, because the box also contains the piece's width.
+FOOT_BIAS = 0.65
+# A second box on the same piece: high IoU, or one box mostly inside the other
+# (IoU stays modest when a tight box sits in a loose one).
+DUP_IOU = 0.55
+DUP_CONTAIN = 0.72
 
 
 @dataclass(frozen=True)
@@ -144,16 +154,88 @@ def detect_pieces_onnx(
     return best, peak_all
 
 
-def _boxes_on_quad(dets: list[PieceDet], quad: np.ndarray | None) -> int:
-    """How many box centers actually sit on the board, not merely in the crop."""
-    if quad is None:
-        return len(dets)
-    contour = np.asarray(quad, dtype=np.float32).reshape(-1, 1, 2)
-    n = 0
-    for d in dets:
-        if cv2.pointPolygonTest(contour, (float(d.xy[0]), float(d.xy[1])), False) >= 0:
-            n += 1
-    return n
+def _overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> tuple[float, float]:
+    """Return (IoU, intersection / smaller area)."""
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    iw = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    ih = max(0.0, min(ay2, by2) - max(ay1, by1))
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0, 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    smaller = min(area_a, area_b)
+    union = area_a + area_b - inter
+    iou = inter / union if union > 0.0 else 0.0
+    contain = inter / smaller if smaller > 0.0 else 0.0
+    return iou, contain
+
+
+def suppress_duplicate_pieces(
+    dets: list[PieceDet],
+    *,
+    iou_thr: float = DUP_IOU,
+    contain_thr: float = DUP_CONTAIN,
+) -> tuple[list[PieceDet], int]:
+    """Drop a lower-confidence box that is the same piece a second time.
+
+    Neighbouring pieces overlap a little and stay. A second box on one piece
+    either covers it (high IoU) or nests inside the first (high containment).
+    """
+    ordered = sorted(dets, key=lambda d: d.conf, reverse=True)
+    kept: list[PieceDet] = []
+    dropped = 0
+    for d in ordered:
+        if any(
+            (iou >= iou_thr or contain >= contain_thr)
+            for iou, contain in (_overlap(d.xyxy, k.xyxy) for k in kept)
+        ):
+            dropped += 1
+            continue
+        kept.append(d)
+    return kept, dropped
+
+
+def standing_xy(
+    xyxy: tuple[float, float, float, float],
+    frame_wh: tuple[int, int],
+    *,
+    bias: float = FOOT_BIAS,
+) -> tuple[float, float]:
+    """Where the piece stands, given an overhead box.
+
+    The head is closer to the lens, so it lands farther from the image center
+    than the feet. Move from the box center toward the image center, along
+    that ray, by ``bias`` of the distance to the box's inner edge. Never step
+    past the image center.
+    """
+    x1, y1, x2, y2 = xyxy
+    cx = (x1 + x2) * 0.5
+    cy = (y1 + y2) * 0.5
+    ox = float(frame_wh[0]) * 0.5
+    oy = float(frame_wh[1]) * 0.5
+    vx, vy = cx - ox, cy - oy
+    norm = (vx * vx + vy * vy) ** 0.5
+    if norm < 1.0 or bias <= 0.0:
+        return (cx, cy)
+    ux, uy = vx / norm, vy / norm
+    projs = [(px - ox) * ux + (py - oy) * uy for px, py in ((x1, y1), (x2, y1), (x2, y2), (x1, y2))]
+    inward = max(0.0, (cx - ox) * ux + (cy - oy) * uy - min(projs)) * bias
+    inward = min(inward, norm)
+    return (cx - ux * inward, cy - uy * inward)
+
+
+def _with_standing_points(dets: list[PieceDet], frame_wh: tuple[int, int]) -> list[PieceDet]:
+    return [
+        PieceDet(
+            xy=standing_xy(d.xyxy, frame_wh),
+            cls=d.cls,
+            conf=d.conf,
+            xyxy=d.xyxy,
+        )
+        for d in dets
+    ]
 
 
 def detect_pieces(
@@ -163,77 +245,42 @@ def detect_pieces(
     conf: float = 0.15,
     search_roi: np.ndarray | None = None,
 ) -> list[PieceDet]:
-    """Detect white/black pieces.
+    """Detect white/black pieces on the full frame.
 
-    A tight crop often returns a handful of boxes while the full frame still
-    sees the set. Pick whichever lands more centers on the board. Stop after
-    the crop only when that on-board count is already a full position.
+    The piece model is trained on full frames. A board crop changes the scale
+    and used to disagree with the full-frame count, so it is not run.
+    ``search_roi`` is accepted and ignored; occupancy still rejects centers
+    that fall outside the board quad.
     """
+    del search_roi
     weights_dir = Path(weights_dir) if weights_dir is not None else default_weights_dir()
     onnx = weights_dir / "pieces.onnx"
     if not onnx.exists():
         print(f"piece detect: missing {onnx}")
         return []
 
-    quad: np.ndarray | None = None
-    crops: list[tuple[np.ndarray, float, float, str]] = []
-    if search_roi is not None and len(np.asarray(search_roi).reshape(-1)) >= 8:
-        quad = np.asarray(search_roi, dtype=np.float64).reshape(4, 2)
-        x0 = max(0, int(quad[:, 0].min()) - 40)
-        y0 = max(0, int(quad[:, 1].min()) - 40)
-        x1 = min(frame_bgr.shape[1], int(quad[:, 0].max()) + 40)
-        y1 = min(frame_bgr.shape[0], int(quad[:, 1].max()) + 40)
-        if x1 > x0 + 40 and y1 > y0 + 40:
-            crops.append((frame_bgr[y0:y1, x0:x1], float(x0), float(y0), "board-crop"))
-    crops.append((frame_bgr, 0.0, 0.0, "full-frame"))
-
     try:
-        best: list[PieceDet] = []
-        best_on = -1
-        best_peak = 0.0
-        best_tag = ""
-        for crop, ox, oy, tag in crops:
-            dets, peak = detect_pieces_onnx(crop, onnx, conf=conf)
-            best_peak = max(best_peak, peak)
-            if ox or oy:
-                dets = [
-                    PieceDet(
-                        xy=(d.xy[0] + ox, d.xy[1] + oy),
-                        cls=d.cls,
-                        conf=d.conf,
-                        xyxy=(
-                            d.xyxy[0] + ox,
-                            d.xyxy[1] + oy,
-                            d.xyxy[2] + ox,
-                            d.xyxy[3] + oy,
-                        ),
-                    )
-                    for d in dets
-                ]
-            on_board = _boxes_on_quad(dets, quad)
-            if on_board > best_on:
-                best = dets
-                best_on = on_board
-                best_tag = tag
-            # Crop already sees a full set — the second pass only adds flicker.
-            if tag == "board-crop" and on_board >= 28:
-                break
+        dets, peak = detect_pieces_onnx(frame_bgr, onnx, conf=conf)
+        dets, dropped = suppress_duplicate_pieces(dets)
+        frame_wh = (int(frame_bgr.shape[1]), int(frame_bgr.shape[0]))
+        dets = _with_standing_points(dets, frame_wh)
         global _ZERO_LOG_I, _LAST_DET_LOG
-        if not best:
+        if not dets:
             _ZERO_LOG_I += 1
             _LAST_DET_LOG = None
             if _ZERO_LOG_I <= 3 or _ZERO_LOG_I % 25 == 0:
                 print(
-                    f"piece detect: 0 boxes (conf≥{conf:.2f}, peak_score≈{best_peak:.3f}, "
-                    f"frame={frame_bgr.shape[1]}x{frame_bgr.shape[0]})"
+                    f"piece detect: 0 boxes (conf≥{conf:.2f}, peak_score≈{peak:.3f}, "
+                    f"frame={frame_wh[0]}x{frame_wh[1]})"
                 )
         else:
             _ZERO_LOG_I = 0
-            sig = (len(best), best_tag)
+            sig = (len(dets), dropped)
             if sig != _LAST_DET_LOG:
                 _LAST_DET_LOG = sig
-                print(f"piece detect: {len(best)} boxes via {best_tag} (peak≈{best_peak:.3f})")
-        return best
+                extra = f", dropped {dropped} overlaps" if dropped else ""
+                print(f"piece detect: {len(dets)} boxes (peak≈{peak:.3f}{extra})")
+        return dets
     except ImportError:
         print("piece detect: onnxruntime missing")
         return []

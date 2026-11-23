@@ -25,6 +25,48 @@ from gamebot.calibration import CalibrationData
 from gamebot.paths import gamebot_home
 
 
+def save_move_still(
+    frame_bgr: np.ndarray,
+    out_dir: Path,
+    *,
+    uci: str,
+    who: str,
+    fen: str,
+    camera_zoom: float,
+    board_corners_camera: list | None,
+) -> Path:
+    """Write one play still plus a sidecar the training pull already picks up.
+
+    Lands in ``captures/sets/04_play`` so ``pull-captures.sh`` copies it with
+    the guided sets. The board area is unlit during play; a move arrow can
+    still be in the frame.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    safe_uci = "".join(ch for ch in uci if ch.isalnum()) or "move"
+    stem = f"{stamp}_{safe_uci}_{who}"
+    path = out_dir / f"{stem}.jpg"
+    n = 2
+    while path.exists():
+        path = out_dir / f"{stem}_{n}.jpg"
+        n += 1
+    if not cv2.imwrite(str(path), frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 95]):
+        raise RuntimeError(f"failed to write {path}")
+    meta = {
+        "image": path.name,
+        "size": [int(frame_bgr.shape[1]), int(frame_bgr.shape[0])],
+        "camera_zoom": camera_zoom,
+        "board_corners_camera": board_corners_camera,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "uci": uci,
+        "who": who,
+        "fen": fen,
+        "set": "04_play",
+    }
+    path.with_suffix(".json").write_text(json.dumps(meta, indent=2) + "\n")
+    return path
+
+
 def _board_roi() -> list[list[float]] | None:
     path = gamebot_home() / "calibration.json"
     if not path.is_file():

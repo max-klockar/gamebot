@@ -443,6 +443,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Use saved calibration; skip auto-cal on launch",
     )
     p.add_argument(
+        "--capture-moves",
+        action="store_true",
+        help="Save a camera still after each registered move (human and bot) "
+        "to ~/.gamebot/captures/sets/04_play for later training",
+    )
+    p.add_argument(
         "--led",
         choices=["auto", "mock", "ws2812", "rgb_pwm"],
         default=None,
@@ -482,6 +488,7 @@ def main(argv: list[str] | None = None) -> None:
         debug_overlay=not args.no_debug,
         skip_calibrate=bool(args.skip_cal),  # --elo must NOT imply skip-cal
         quick_start_elo=args.elo,
+        capture_moves=bool(args.capture_moves),
         ambient_sound=bool(args.ambient),
         virtual_table=args.virtual_table or "never",
     )
