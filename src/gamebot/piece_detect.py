@@ -26,9 +26,10 @@ CLASS_BLACK = 1
 CLASS_NAMES = {CLASS_WHITE: "white", CLASS_BLACK: "black"}
 
 # Share of the way from the box center to its inner radial edge.
-# The head projects outward; the base is the inner edge. Going all the way
-# there overshoots, because the box also contains the piece's width.
-FOOT_BIAS = 0.65
+# The head projects outward; the base is inward of the center. The box is
+# square and the piece is round, so that inner corner sits outside the piece.
+# Stay closer to the box middle than to the corner.
+FOOT_BIAS = 0.4
 # A second box on the same piece: high IoU, or one box mostly inside the other
 # (IoU stays modest when a tight box sits in a loose one).
 DUP_IOU = 0.55
