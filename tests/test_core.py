@@ -362,22 +362,52 @@ def test_wrong_color_is_not_a_human_move() -> None:
     assert verdict.move is not None and verdict.move.uci() == "e2e4"
 
 
-def test_arrow_pulse_scores_only_in_the_dark_gap() -> None:
-    from chess_plugin.plugin import ArrowPulse, step_arrow_pulse
+def test_arrow_stays_up_until_a_hand_or_timeout() -> None:
+    from chess_plugin.plugin import (
+        ARROW_CHECK,
+        ARROW_FLUSH,
+        ARROW_SHOW,
+        ArrowWatch,
+        step_arrow_watch,
+    )
 
-    pulse = ArrowPulse(lit=True, on_since=0.0, dark_skip=0)
-    assert step_arrow_pulse(pulse, active=True, now=0.2, on_s=0.6) is False
-    assert pulse.lit is True
-    assert step_arrow_pulse(pulse, active=True, now=0.7, on_s=0.6) is False
-    assert pulse.lit is False and pulse.dark_skip == 1
-    # First dark frame can still contain the previous light.
-    assert step_arrow_pulse(pulse, active=True, now=0.8, on_s=0.6) is False
-    assert pulse.lit is False and pulse.dark_skip == 0
-    # The next dark frame is the one that may be scored, then the arrow returns.
-    assert step_arrow_pulse(pulse, active=True, now=0.9, on_s=0.6) is True
-    assert pulse.lit is True and pulse.on_since == 0.9
-    assert step_arrow_pulse(pulse, active=False, now=1.2, on_s=0.6) is True
-    assert pulse.lit is False
+    watch = ArrowWatch(phase=ARROW_SHOW, since=0.0, arm=0)
+    assert step_arrow_watch(watch, active=True, motion=False, now=1.0) == "skip"
+    assert watch.lit is True
+
+    # A hand turns the arrow off. The frame in hand still contains the arrow.
+    assert step_arrow_watch(watch, active=True, motion=True, now=2.0) == "skip"
+    assert watch.phase == ARROW_FLUSH and watch.dark_skip == 3 and watch.lit is False
+
+    # Three dark frames are dropped so the sensor is no longer showing the arrow.
+    assert step_arrow_watch(watch, active=True, motion=False, now=2.1) == "skip"
+    assert watch.phase == ARROW_FLUSH and watch.dark_skip == 2
+    assert step_arrow_watch(watch, active=True, motion=False, now=2.2) == "skip"
+    assert watch.phase == ARROW_FLUSH and watch.dark_skip == 1
+    assert step_arrow_watch(watch, active=True, motion=False, now=2.3) == "skip"
+    assert watch.phase == ARROW_CHECK and watch.since == 2.3
+
+    # Still dark frame is scored. A hand during the check is not.
+    assert step_arrow_watch(watch, active=True, motion=False, now=2.4) == "score"
+    assert watch.phase == ARROW_CHECK
+    assert step_arrow_watch(watch, active=True, motion=True, now=4.0) == "skip"
+    assert watch.phase == ARROW_CHECK and watch.since == 4.0
+
+    # An unresolved check lights the arrow again, and the light-up is not a hand.
+    assert step_arrow_watch(watch, active=True, motion=False, now=7.0) == "skip"
+    assert watch.phase == ARROW_SHOW and watch.arm == 3 and watch.since == 7.0
+    assert step_arrow_watch(watch, active=True, motion=True, now=7.1) == "skip"
+    assert watch.phase == ARROW_SHOW and watch.arm == 2
+
+    # No hand for the watch interval starts another dark check.
+    quiet = ArrowWatch(phase=ARROW_SHOW, since=0.0, arm=0)
+    assert step_arrow_watch(quiet, active=True, motion=False, now=9.9) == "skip"
+    assert quiet.phase == ARROW_SHOW
+    assert step_arrow_watch(quiet, active=True, motion=False, now=10.0) == "skip"
+    assert quiet.phase == ARROW_FLUSH
+
+    assert step_arrow_watch(quiet, active=False, motion=True, now=11.0) == "score"
+    assert quiet.lit is True
 
 
 def test_portal_page_starts_a_game() -> None:
