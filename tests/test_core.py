@@ -362,6 +362,23 @@ def test_wrong_color_is_not_a_human_move() -> None:
     assert verdict.move is not None and verdict.move.uci() == "e2e4"
 
 
+def test_arrow_drops_when_the_piece_reaches_the_target() -> None:
+    from chess_plugin.plugin import arrow_release
+
+    # Piece still on the origin, target empty: keep the arrow and remember home.
+    drop, saw = arrow_release(True, False, False)
+    assert drop is False and saw is True
+    # Origin still lit (the arrow) and the target now has the piece.
+    drop, saw = arrow_release(True, True, saw)
+    assert drop is True and saw is True
+    # Target lit on the first frame is the arrowhead, not a placed piece.
+    drop, saw = arrow_release(True, True, False)
+    assert drop is False and saw is False
+    # The piece has left home.
+    drop, _saw = arrow_release(False, False, False)
+    assert drop is True
+
+
 def test_portal_page_starts_a_game() -> None:
     import urllib.error
     import urllib.request
