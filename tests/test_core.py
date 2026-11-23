@@ -362,21 +362,22 @@ def test_wrong_color_is_not_a_human_move() -> None:
     assert verdict.move is not None and verdict.move.uci() == "e2e4"
 
 
-def test_arrow_drops_when_the_piece_reaches_the_target() -> None:
-    from chess_plugin.plugin import arrow_release
+def test_arrow_pulse_scores_only_in_the_dark_gap() -> None:
+    from chess_plugin.plugin import ArrowPulse, step_arrow_pulse
 
-    # Piece still on the origin, target empty: keep the arrow and remember home.
-    drop, saw = arrow_release(True, False, False)
-    assert drop is False and saw is True
-    # Origin still lit (the arrow) and the target now has the piece.
-    drop, saw = arrow_release(True, True, saw)
-    assert drop is True and saw is True
-    # Target lit on the first frame is the arrowhead, not a placed piece.
-    drop, saw = arrow_release(True, True, False)
-    assert drop is False and saw is False
-    # The piece has left home.
-    drop, _saw = arrow_release(False, False, False)
-    assert drop is True
+    pulse = ArrowPulse(lit=True, on_since=0.0, dark_skip=0)
+    assert step_arrow_pulse(pulse, active=True, now=0.2, on_s=0.6) is False
+    assert pulse.lit is True
+    assert step_arrow_pulse(pulse, active=True, now=0.7, on_s=0.6) is False
+    assert pulse.lit is False and pulse.dark_skip == 1
+    # First dark frame can still contain the previous light.
+    assert step_arrow_pulse(pulse, active=True, now=0.8, on_s=0.6) is False
+    assert pulse.lit is False and pulse.dark_skip == 0
+    # The next dark frame is the one that may be scored, then the arrow returns.
+    assert step_arrow_pulse(pulse, active=True, now=0.9, on_s=0.6) is True
+    assert pulse.lit is True and pulse.on_since == 0.9
+    assert step_arrow_pulse(pulse, active=False, now=1.2, on_s=0.6) is True
+    assert pulse.lit is False
 
 
 def test_portal_page_starts_a_game() -> None:
