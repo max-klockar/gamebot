@@ -29,6 +29,7 @@ class RuntimeHandles:
     camera: object | None = None
     calibration: object | None = None
     renderer: object | None = None
+    led: object | None = None  # LedRing — turn / error colours
 
 
 @runtime_checkable

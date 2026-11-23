@@ -199,6 +199,11 @@ class App:
                     else:
                         self.phase = HostPhase.CALIBRATE
                         self._cal_frames = 0
+                        self.led.set_mode(LedMode.CALIBRATE)
+            elif self.phase == HostPhase.CALIBRATE:
+                self.led.set_mode(LedMode.CALIBRATE)
+            elif self.phase == HostPhase.VERIFY:
+                self.led.set_mode(LedMode.IDLE)
             elif self.phase == HostPhase.IDENTIFY:
                 self.led.set_mode(LedMode.IDLE)
                 self._run_identify(frame)
@@ -210,6 +215,7 @@ class App:
     def _run_auto_calibration(self) -> None:
         from gamebot.calibration import render_color_corner_pattern
 
+        self.led.set_mode(LedMode.CALIBRATE)
         size = self.config.projector_size
 
         def show_and_grab(points: np.ndarray, status: str) -> np.ndarray:
@@ -284,6 +290,7 @@ class App:
             camera=self.camera,
             calibration=self.calibration,
             renderer=self.renderer,
+            led=self.led,
         )
         self.session = plugin.create_session(runtime)
         self.session.on_enter()

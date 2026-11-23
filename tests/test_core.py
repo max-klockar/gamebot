@@ -292,6 +292,12 @@ def test_led_modes() -> None:
     led.set_mode(LedMode.THINKING)
     r, g, b = led.sample(0.0)
     assert r > 50 and b > 50
+    led.set_mode(LedMode.CALIBRATE)
+    a = led.sample(0.0)
+    bcol = led.sample(0.7)
+    assert a != bcol  # rainbow advances with time
+    pixels = led.sample_pixels(0.1)
+    assert len(pixels) >= 1
     led.thermal = ThermalSensor(hot_celsius=75)
     led.thermal.set_mock(90)
     led.tick_thermal()

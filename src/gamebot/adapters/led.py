@@ -3,9 +3,12 @@ from __future__ import annotations
 """RGB LED ring status light.
 
 Modes:
-  idle     — soft vague blue (gentle breathe)
-  thinking — purple pulse while the engine calculates
-  overheat — violent red pulse if the Pi is too hot (highest priority)
+  idle        — soft vague blue (menus / idle)
+  player_turn — turquoise breathe (human to move)
+  bot_turn    — purple pulse (engine thinking or place bot piece)
+  calibrate   — rainbow chase (auto-cal; lights shoot up, safe for camera)
+  error       — violent red pulse (illegal / unexpected — game halted)
+  overheat    — violent red if the Pi is too hot (highest priority)
 
 Hardware backends:
   mock     — tracks RGB in memory (laptop / tests)
@@ -15,6 +18,7 @@ Hardware backends:
 Wire NeoPixels to BCM 18 (PWM) or use separate R/G/B MOSFET pins.
 """
 
+import colorsys
 import math
 import threading
 import time
@@ -24,15 +28,22 @@ from enum import Enum
 
 class LedMode(str, Enum):
     IDLE = "idle"
-    THINKING = "thinking"
+    PLAYER_TURN = "player_turn"
+    BOT_TURN = "bot_turn"
+    THINKING = "thinking"  # alias of bot_turn (engine calc)
+    CALIBRATE = "calibrate"
+    ERROR = "error"
     OVERHEAT = "overheat"
 
 
-# (base RGB 0-255, pulse amplitude 0-1, period seconds)
+# (base RGB 0-255, pulse amplitude 0-1, period seconds) — solid-colour modes
 _MODE_STYLE: dict[LedMode, tuple[tuple[int, int, int], float, float]] = {
-    LedMode.IDLE: ((18, 48, 140), 0.16, 4.0),        # dim true blue (not white/icy)
-    LedMode.THINKING: ((150, 20, 200), 0.55, 0.75),  # purple
-    LedMode.OVERHEAT: ((255, 0, 0), 1.0, 0.12),      # violent red
+    LedMode.IDLE: ((18, 48, 140), 0.16, 4.0),           # dim true blue
+    LedMode.PLAYER_TURN: ((0, 200, 180), 0.35, 2.2),    # turquoise
+    LedMode.BOT_TURN: ((150, 20, 200), 0.55, 0.75),     # purple
+    LedMode.THINKING: ((150, 20, 200), 0.55, 0.75),     # purple (engine)
+    LedMode.ERROR: ((255, 0, 0), 1.0, 0.35),            # red pulse — fault
+    LedMode.OVERHEAT: ((255, 0, 0), 1.0, 0.12),         # violent red — thermal
 }
 
 
@@ -48,6 +59,13 @@ def pulse_brightness(t: float, period: float, amplitude: float) -> float:
 def apply_pulse(rgb: tuple[int, int, int], brightness: float) -> tuple[int, int, int]:
     b = max(0.0, min(1.0, brightness))
     return (int(rgb[0] * b), int(rgb[1] * b), int(rgb[2] * b))
+
+
+def rainbow_rgb(t: float, index: int = 0, count: int = 1, *, speed: float = 0.42) -> tuple[int, int, int]:
+    """HSV rainbow; spatial phase along the strip + time chase."""
+    hue = (t * speed + index / max(count, 1)) % 1.0
+    r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 0.62)
+    return (int(r * 255), int(g * 255), int(b * 255))
 
 
 @dataclass
@@ -77,24 +95,41 @@ class ThermalSensor:
 
 class LedBackend:
     def open(self) -> None: ...
+    def led_count(self) -> int:
+        return 1
+
     def show(self, rgb: tuple[int, int, int]) -> None: ...
+
+    def show_pixels(self, pixels: list[tuple[int, int, int]]) -> None:
+        if pixels:
+            self.show(pixels[0])
+
     def close(self) -> None: ...
 
 
 class MockLedBackend(LedBackend):
     def __init__(self) -> None:
         self.rgb: tuple[int, int, int] = (0, 0, 0)
+        self.pixels: list[tuple[int, int, int]] = []
         self.history: list[tuple[int, int, int]] = []
 
     def open(self) -> None:
         self.rgb = (0, 0, 0)
+        self.pixels = []
 
     def show(self, rgb: tuple[int, int, int]) -> None:
         self.rgb = rgb
+        self.pixels = [rgb]
         self.history.append(rgb)
+
+    def show_pixels(self, pixels: list[tuple[int, int, int]]) -> None:
+        self.pixels = list(pixels)
+        self.rgb = pixels[0] if pixels else (0, 0, 0)
+        self.history.append(self.rgb)
 
     def close(self) -> None:
         self.rgb = (0, 0, 0)
+        self.pixels = []
 
 
 class RgbPwmBackend(LedBackend):
@@ -147,6 +182,9 @@ class Ws2812Backend(LedBackend):
         self.brightness = brightness
         self._strip = None
 
+    def led_count(self) -> int:
+        return self.count
+
     def open(self) -> None:
         from rpi_ws281x import PixelStrip, Color  # type: ignore
 
@@ -156,11 +194,15 @@ class Ws2812Backend(LedBackend):
         self._strip = strip
 
     def show(self, rgb: tuple[int, int, int]) -> None:
+        self.show_pixels([rgb] * self.count)
+
+    def show_pixels(self, pixels: list[tuple[int, int, int]]) -> None:
         if self._strip is None:
             return
-        color = self._Color(rgb[0], rgb[1], rgb[2])
-        for i in range(self.count):
-            self._strip.setPixelColor(i, color)
+        n = self.count
+        for i in range(n):
+            r, g, b = pixels[i % len(pixels)] if pixels else (0, 0, 0)
+            self._strip.setPixelColor(i, self._Color(r, g, b))
         self._strip.show()
 
     def close(self) -> None:
@@ -242,7 +284,20 @@ class LedRing:
             self._app_mode = mode
 
     def thinking(self, active: bool) -> None:
-        self.set_mode(LedMode.THINKING if active else LedMode.IDLE)
+        """Engine calculating → purple. When done, leave BOT_TURN (place piece)."""
+        self.set_mode(LedMode.THINKING if active else LedMode.BOT_TURN)
+
+    def player_turn(self) -> None:
+        self.set_mode(LedMode.PLAYER_TURN)
+
+    def bot_turn(self) -> None:
+        self.set_mode(LedMode.BOT_TURN)
+
+    def calibrate(self) -> None:
+        self.set_mode(LedMode.CALIBRATE)
+
+    def error(self) -> None:
+        self.set_mode(LedMode.ERROR)
 
     def tick_thermal(self) -> None:
         """Call periodically from the main loop to apply overheat override."""
@@ -261,20 +316,31 @@ class LedRing:
             return self._app_mode
 
     def sample(self, t: float | None = None) -> tuple[int, int, int]:
-        """Compute RGB for time t (seconds since open). Useful for tests."""
+        """Compute solid RGB for time t (seconds since open). Useful for tests."""
         mode = self._effective_mode()
-        base, amp, period = _MODE_STYLE[mode]
         now = time.monotonic() - self._t0 if t is None else t
+        if mode == LedMode.CALIBRATE:
+            return rainbow_rgb(now, 0, 1)
+        base, amp, period = _MODE_STYLE[mode]
         return apply_pulse(base, pulse_brightness(now, period, amp))
+
+    def sample_pixels(self, t: float | None = None) -> list[tuple[int, int, int]]:
+        mode = self._effective_mode()
+        now = time.monotonic() - self._t0 if t is None else t
+        n = max(1, int(self.backend.led_count()))
+        if mode == LedMode.CALIBRATE:
+            return [rainbow_rgb(now, i, n) for i in range(n)]
+        rgb = self.sample(now)
+        return [rgb] * n
 
     def _run(self) -> None:
         interval = 1.0 / max(1.0, self.fps)
         while not self._stop.is_set():
-            rgb = self.sample()
-            self.current_rgb = rgb
+            pixels = self.sample_pixels()
+            self.current_rgb = pixels[0] if pixels else (0, 0, 0)
             try:
                 if self.enabled:
-                    self.backend.show(rgb)
+                    self.backend.show_pixels(pixels)
             except Exception:
                 pass
             self._stop.wait(interval)

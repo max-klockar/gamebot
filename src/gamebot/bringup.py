@@ -57,7 +57,10 @@ def run_led_demo(seconds: float, led_count: int, loop: bool) -> None:
     led.open()
     modes = [
         (LedMode.IDLE, "idle blue", None),
-        (LedMode.THINKING, "thinking purple", None),
+        (LedMode.PLAYER_TURN, "player turquoise", None),
+        (LedMode.BOT_TURN, "bot purple", None),
+        (LedMode.CALIBRATE, "calibrate rainbow", None),
+        (LedMode.ERROR, "fault red pulse", None),
         (LedMode.OVERHEAT, "overheat red", 90.0),
     ]
     print(f"LED demo on {led_count} LEDs — Ctrl+C to stop")
@@ -117,8 +120,14 @@ def run_auto_calibrate(
         proj.poll_key(25)
         return cam.read()
 
-    print("searching for colour corners (start tight/center, then steer)…")
-    result = calibrator.auto_calibrate_with_search(show_and_grab, show_frame)
+    led = _make_led_ring("auto", 90)
+    led.open()
+    led.set_mode(LedMode.CALIBRATE)
+    print("searching for colour corners (start tight/center, then steer)… rainbow LEDs on")
+    try:
+        result = calibrator.auto_calibrate_with_search(show_and_grab, show_frame)
+    finally:
+        led.close()
     if result is None:
         # Last frame dump
         frame = cam.read()
