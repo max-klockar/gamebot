@@ -7,7 +7,7 @@ Modes:
   player_turn — turquoise breathe (human to move)
   bot_turn    — purple pulse (engine thinking or place bot piece)
   calibrate   — rainbow chase (auto-cal; lights shoot up, safe for camera)
-  error       — violent red pulse (illegal / unexpected — game halted)
+  error       — calm red breathe (illegal / unexpected — waiting for fix)
   overheat    — violent red if the Pi is too hot (highest priority)
 
 Hardware backends:
@@ -42,7 +42,7 @@ _MODE_STYLE: dict[LedMode, tuple[tuple[int, int, int], float, float]] = {
     LedMode.PLAYER_TURN: ((0, 200, 180), 0.35, 2.2),    # turquoise
     LedMode.BOT_TURN: ((150, 20, 200), 0.55, 0.75),     # purple
     LedMode.THINKING: ((150, 20, 200), 0.55, 0.75),     # purple (engine)
-    LedMode.ERROR: ((255, 0, 0), 1.0, 0.35),            # red pulse — fault
+    LedMode.ERROR: ((160, 24, 24), 0.28, 2.8),          # calm red breathe — fault
     LedMode.OVERHEAT: ((255, 0, 0), 1.0, 0.12),         # violent red — thermal
 }
 
