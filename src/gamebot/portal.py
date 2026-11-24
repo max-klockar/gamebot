@@ -82,9 +82,11 @@ _PAGE = """<!DOCTYPE html>
         <p><button type="submit" id="go">Start chess</button></p>
       </form>
       <p>
+        <button type="button" id="accept">Save these boxes</button>
         <button type="button" id="shot">Capture still</button>
         <button type="button" id="off" class="danger">Shut down Pi</button>
       </p>
+      <div class="sub">Save these boxes keeps the piece rectangles on screen, and the board outline, as training labels.</div>
       <div class="err" id="err"></div>
       <div class="sub" id="saved"></div>
     </div>
@@ -186,6 +188,10 @@ document.getElementById("shot").addEventListener("click", () => {
   fetch("/api/capture", {method: "POST"});
 });
 
+document.getElementById("accept").addEventListener("click", () => {
+  fetch("/api/accept", {method: "POST"});
+});
+
 document.getElementById("off").addEventListener("click", async () => {
   if (!armOff) {
     armOff = true;
@@ -281,6 +287,7 @@ class OperatorPortal:
         self.last_capture = ""
         self._start: dict[str, Any] | None = None
         self._capture = False
+        self._accept = False
         self._shutdown = False
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -386,9 +393,19 @@ class OperatorPortal:
             self.error = ""
         return None
 
+    def take_accept(self) -> bool:
+        with self._lock:
+            flag = self._accept
+            self._accept = False
+            return flag
+
     def request_capture(self) -> None:
         with self._lock:
             self._capture = True
+
+    def request_accept(self) -> None:
+        with self._lock:
+            self._accept = True
 
     def request_shutdown(self) -> None:
         with self._lock:
@@ -445,6 +462,10 @@ def _handler(portal: OperatorPortal):
                 return
             if path == "/api/capture":
                 portal.request_capture()
+                self._send(204, b"", "text/plain")
+                return
+            if path == "/api/accept":
+                portal.request_accept()
                 self._send(204, b"", "text/plain")
                 return
             if path == "/api/shutdown":

@@ -68,6 +68,87 @@ def save_move_still(
     return path
 
 
+def save_accepted_labels(
+    frame_bgr: np.ndarray,
+    out_dir: Path,
+    pieces: list[dict],
+    board_quad: list | None,
+    *,
+    fen: str = "",
+    set_name: str = "06_accepted",
+) -> Path:
+    """Write the frame plus LabelMe boxes the detector already drew.
+
+    Piece rectangles are ``white`` / ``black``. The locked board quad is a
+    4-point ``board`` polygon, which both the box trainer and the corner
+    trainer can read. No hand labeling.
+    """
+    shapes: list[dict] = []
+    for piece in pieces:
+        try:
+            x1, y1, x2, y2 = (float(piece[k]) for k in ("x1", "y1", "x2", "y2"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if x2 - x1 < 2 or y2 - y1 < 2:
+            continue
+        label = "white" if int(piece.get("cls", 0)) == 0 else "black"
+        shapes.append(
+            {
+                "label": label,
+                "points": [[x1, y1], [x2, y2]],
+                "group_id": None,
+                "description": "",
+                "shape_type": "rectangle",
+                "flags": {},
+                "mask": None,
+            }
+        )
+    quad: list[list[float]] = []
+    for pt in board_quad or []:
+        try:
+            quad.append([float(pt[0]), float(pt[1])])
+        except (TypeError, ValueError, IndexError):
+            quad = []
+            break
+    if len(quad) == 4:
+        shapes.append(
+            {
+                "label": "board",
+                "points": quad,
+                "group_id": None,
+                "description": "",
+                "shape_type": "polygon",
+                "flags": {},
+                "mask": None,
+            }
+        )
+    if not any(s["label"] in {"white", "black"} for s in shapes):
+        raise RuntimeError("no piece boxes to save")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    path = out_dir / f"{stamp}.jpg"
+    n = 2
+    while path.exists():
+        path = out_dir / f"{stamp}_{n}.jpg"
+        n += 1
+    if not cv2.imwrite(str(path), frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 95]):
+        raise RuntimeError(f"failed to write {path}")
+    doc = {
+        "version": "7.10.0",
+        "flags": {"accepted": True},
+        "shapes": shapes,
+        "imagePath": path.name,
+        "imageData": None,
+        "imageHeight": int(frame_bgr.shape[0]),
+        "imageWidth": int(frame_bgr.shape[1]),
+        "fen": fen,
+        "set": set_name,
+    }
+    path.with_suffix(".json").write_text(json.dumps(doc, indent=2) + "\n")
+    return path
+
+
 def _board_roi() -> list[list[float]] | None:
     path = gamebot_home() / "calibration.json"
     if not path.is_file():

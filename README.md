@@ -19,7 +19,7 @@ The camera can only be open in the game process, so the page is served from ther
 ./scripts/run-pi.sh --portal --camera picam --projector hdmi
 ```
 
-Open `http://<pi>:8080`. From the phone: live camera, start chess at an Elo (optional skip-cal and a still after each move), capture a training frame, or shut the Pi down. During a game the camera image shows each detection and the standing point, and the board on the page is the occupancy the game believes (rank 8 at the top). Logs are the same lines as the terminal.
+Open `http://<pi>:8080`. From the phone: live camera, start chess at an Elo (optional skip-cal and a still after each move), capture a training frame, or shut the Pi down. During a game the camera image shows each detection and the standing point, and the board on the page is the game's pieces (rank 8 at the top). **Save these boxes** writes those rectangles, plus the locked board outline, to `captures/sets/06_accepted` as training labels. Press it when the boxes sit on the pieces and the arrow is off. Logs are the same lines as the terminal.
 
 `--elo` still starts immediately. Add `--portal` beside it if you also want the page. Booting straight into the page is `gamebot.service` in the hardware repo.
 

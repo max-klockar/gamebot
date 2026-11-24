@@ -428,7 +428,7 @@ def test_portal_page_starts_a_game() -> None:
     try:
         base = f"http://127.0.0.1:{portal.port}"
         html = urllib.request.urlopen(base + "/", timeout=2).read().decode()
-        assert "Start chess" in html and "Capture still" in html and "♕" in html
+        assert "Start chess" in html and "Capture still" in html and "Save these boxes" in html and "♕" in html
         assert "cannot name" in html and 'class="${tone}">?</span>' in html
         req = urllib.request.Request(
             base + "/api/start",
@@ -448,6 +448,11 @@ def test_portal_page_starts_a_game() -> None:
         except urllib.error.HTTPError as exc:
             raised = exc.code == 409
         assert raised
+        accept = urllib.request.Request(base + "/api/accept", data=b"", method="POST")
+        with urllib.request.urlopen(accept, timeout=2) as res:
+            assert res.status == 204
+        assert portal.take_accept() is True
+        assert portal.take_accept() is False
     finally:
         portal.close()
 
@@ -471,6 +476,30 @@ def test_save_move_still_writes_sidecar(tmp_path: Path) -> None:
     assert meta["uci"] == "e2e4" and meta["who"] == "human" and meta["set"] == "04_play"
     assert meta["camera_zoom"] == 1.2
     assert meta["fen"].split()[1] == "b"
+
+
+def test_save_accepted_labels_writes_piece_and_board_shapes(tmp_path: Path) -> None:
+    from gamebot.capture_frames import save_accepted_labels
+
+    frame = np.zeros((40, 60, 3), dtype=np.uint8)
+    path = save_accepted_labels(
+        frame,
+        tmp_path,
+        [
+            {"x1": 2, "y1": 3, "x2": 12, "y2": 18, "cls": 0},
+            {"x1": 20, "y1": 4, "x2": 30, "y2": 16, "cls": 1},
+        ],
+        [[1, 2], [50, 2], [48, 36], [3, 34]],
+        fen="8/8/8/8/8/8/8/8 w - - 0 1",
+    )
+    doc = json.loads(path.with_suffix(".json").read_text())
+    labels = [s["label"] for s in doc["shapes"]]
+    assert labels == ["white", "black", "board"]
+    assert doc["shapes"][0]["shape_type"] == "rectangle"
+    assert doc["shapes"][2]["shape_type"] == "polygon"
+    assert doc["shapes"][2]["points"] == [[1.0, 2.0], [50.0, 2.0], [48.0, 36.0], [3.0, 34.0]]
+    assert doc["imagePath"] == path.name
+    assert doc["set"] == "06_accepted"
 
 
 def test_standing_point_moves_toward_image_center() -> None:

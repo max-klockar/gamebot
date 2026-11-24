@@ -362,6 +362,8 @@ class App:
             return
         if portal.take_capture():
             self._capture_portal_frame(frame)
+        if portal.take_accept():
+            self._accept_portal_labels(frame)
         if self.phase == HostPhase.PORTAL:
             cmd = portal.poll_start()
             if cmd is not None:
@@ -433,6 +435,51 @@ class App:
         print(f"portal capture → {path}")
         if self.portal is not None:
             self.portal.note_capture_path(str(path))
+
+    def _accept_portal_labels(self, frame: np.ndarray) -> None:
+        """Keep the boxes on screen, and the locked board outline, as training labels."""
+        from gamebot.capture_frames import save_accepted_labels
+
+        portal = self.portal
+        snap: dict = {}
+        if self.session is not None and hasattr(self.session, "vision_snapshot"):
+            snap = self.session.vision_snapshot() or {}
+        pieces = list(snap.get("pieces") or [])
+        if not pieces:
+            msg = "No piece boxes to save. Wait until the picture shows them."
+            print(f"portal: {msg}")
+            if portal is not None:
+                portal.set_error(msg)
+            return
+        session = self.session
+        arrow = getattr(session, "_arrow", None) if session is not None else None
+        if (
+            session is not None
+            and getattr(session, "_awaiting_settle", False)
+            and getattr(arrow, "lit", False)
+        ):
+            msg = "The arrow is still on. Save when the boxes are on a clear picture."
+            print(f"portal: {msg}")
+            if portal is not None:
+                portal.set_error(msg)
+            return
+        out = self.config.data_dir / "captures" / "sets" / "06_accepted"
+        try:
+            path = save_accepted_labels(
+                frame,
+                out,
+                pieces,
+                snap.get("board"),
+                fen=str(snap.get("fen") or ""),
+            )
+        except (OSError, RuntimeError) as exc:
+            print(f"portal accept failed: {exc}")
+            if portal is not None:
+                portal.set_error(str(exc))
+            return
+        print(f"portal accepted labels → {path}")
+        if portal is not None:
+            portal.note_capture_path(str(path))
 
     def _build_scene(self) -> Scene:
         if self.phase == HostPhase.PORTAL and self.portal is not None:
